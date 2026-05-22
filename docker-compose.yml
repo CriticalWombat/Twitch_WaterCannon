@@ -1,0 +1,25 @@
+services:
+  water-cannon:
+    build: .
+    container_name: water-cannon
+    restart: unless-stopped
+
+    # ── GPIO access ──────────────────────────────────────────────────────────
+    # --privileged gives full hardware access (simplest for a Pi).
+    # If you'd rather be precise, remove privileged and uncomment the
+    # devices block below – adjust /dev/gpiomem path if needed.
+    privileged: true
+    # devices:
+    #   - /dev/gpiomem:/dev/gpiomem
+
+    # ── Environment variables ────────────────────────────────────────────────
+    # Copy .env.example → .env and fill in your real values.
+    env_file:
+      - .env
+
+    # ── Logging ─────────────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
