@@ -1,6 +1,6 @@
 # 💧 Water Cannon – Twitch → GPIO Controller
 
-Listens for a Twitch channel point redemption named **waterCannon** and
+Listens for a Twitch channel point redemption named **Water Cannon** and
 pulses a Raspberry Pi GPIO pin HIGH for 5 seconds to trigger a relay/valve.
 
 ---
@@ -35,7 +35,7 @@ water-cannon/
 ### 1. Create the channel point reward on Twitch
 
 In your **Creator Dashboard → Viewer Rewards → Channel Points → Manage Rewards**,
-create a reward with the title **exactly** `waterCannon` (case-sensitive).
+create a reward with the title **exactly** `Water Cannon` (case-sensitive).
 
 ### 2. Get a refresh token (one-time)
 
