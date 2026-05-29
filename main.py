@@ -19,8 +19,13 @@ import os
 import signal
 import sys
 
-import websockets
 import httpx
+import websockets
+from dotenv import load_dotenv
+
+# Load .env file if present – works when running directly with Python.
+# Docker Compose injects env vars on its own, so this is a no-op there.
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Configuration  (override via environment variables or edit directly)
@@ -30,8 +35,8 @@ TWITCH_CLIENT_SECRET  = os.environ.get("TWITCH_CLIENT_SECRET",  "PLACEHOLDER_CLI
 TWITCH_REFRESH_TOKEN  = os.environ.get("TWITCH_REFRESH_TOKEN",  "PLACEHOLDER_REFRESH_TOKEN")
 TWITCH_BROADCASTER_ID = os.environ.get("TWITCH_BROADCASTER_ID", "PLACEHOLDER_BROADCASTER_ID")
 
-REWARD_NAME           = os.environ.get("REWARD_NAME",  "waterCannon")   # must match exactly (case-sensitive)
-GPIO_PIN              = int(os.environ.get("GPIO_PIN", "18"))            # BCM numbering
+REWARD_NAME           = os.environ.get("REWARD_NAME",  "Water Cannon (test)")   # must match exactly (case-sensitive)
+GPIO_PIN              = int(os.environ.get("GPIO_PIN", "4"))            # BCM numbering
 PULSE_DURATION_SEC    = float(os.environ.get("PULSE_DURATION_SEC", "5"))
 
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
@@ -187,9 +192,9 @@ async def subscribe_to_redemptions(
     client: httpx.AsyncClient,
     tokens: TokenManager,
 ) -> None:
-    """Register the EventSub subscription for channel point redemptions."""
+    """Register the EventSub subscription for custom Bits Power-up redemptions."""
     payload = {
-        "type": "channel.channel_points_custom_reward_redemption.add",
+        "type": "channel.custom_power_up_redemption.add",
         "version": "1",
         "condition": {
             "broadcaster_user_id": TWITCH_BROADCASTER_ID,
@@ -212,7 +217,7 @@ async def subscribe_to_redemptions(
         )
 
     if response.status_code in (200, 202):
-        log.info("Subscribed to redemptions for broadcaster %s", TWITCH_BROADCASTER_ID)
+        log.info("Subscribed to custom Power-up redemptions for broadcaster %s", TWITCH_BROADCASTER_ID)
     else:
         log.error("Failed to subscribe: %s %s", response.status_code, response.text)
         raise RuntimeError("EventSub subscription failed")
@@ -224,10 +229,10 @@ async def subscribe_to_redemptions(
 async def run():
     tokens = TokenManager(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_REFRESH_TOKEN)
 
-    # Unbounded queue – every redemption is honored in arrival order.
+    # Unbounded queue – every redemption is honoured in arrival order.
     cannon_queue: asyncio.Queue = asyncio.Queue()
 
-    # Start the single worker that serializes GPIO pulses.
+    # Start the single worker that serialises GPIO pulses.
     asyncio.create_task(cannon_worker(cannon_queue))
 
     async with httpx.AsyncClient() as http_client:
@@ -257,10 +262,14 @@ async def run():
                         # ── Notification: check for our reward ──────────────
                         elif msg_type == "notification":
                             event = payload.get("event", {})
-                            reward_title = event.get("reward", {}).get("title", "")
+                            # Log full event at DEBUG level so you can inspect the
+                            # exact field names if reward matching isn't working.
+                            log.debug("Raw event payload: %s", json.dumps(event, indent=2))
+
+                            reward_title = event.get("custom_power_up", {}).get("title", "")
                             user = event.get("user_name", "unknown")
 
-                            log.info("Redemption received: '%s' by %s", reward_title, user)
+                            log.info("Power-up redemption received: '%s' by %s", reward_title, user)
 
                             if reward_title == REWARD_NAME:
                                 cannon_queue.put_nowait(user)
