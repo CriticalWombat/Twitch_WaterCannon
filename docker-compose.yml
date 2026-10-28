@@ -17,6 +17,11 @@ services:
     env_file:
       - .env
 
+    # ── Overlay web server ───────────────────────────────────────────────────
+    # OBS browser source: http://<pi-address>:5000/overlay (read-only, LAN only).
+    ports:
+      - "5000:5000"
+
     # ── Persistent data ──────────────────────────────────────────────────────
     # Scores live in /data/soak.db so rebuilds and restarts keep them.
     volumes:

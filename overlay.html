@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Archfoot Soak Overlay</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
+<style>
+:root{--red:#ff2b2b;--mint:#d9fff5;--cyan:#27e6e6;--panel:#0e0e0ee8;--alert-top:150px}
+*{box-sizing:border-box}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Orbitron,Bahnschrift,"Segoe UI",Arial,sans-serif;color:var(--mint)}
+body.dark{background:#161616}
+.red{color:var(--mint);-webkit-text-stroke:1px var(--red);text-shadow:0 0 6px var(--red),0 0 18px var(--red),0 0 38px #a00}
+.cy{color:var(--mint);text-shadow:0 0 6px var(--cyan),0 0 18px var(--cyan)}
+#panel{position:absolute;top:32px;right:32px;width:380px}
+#strip{display:none;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border:2px solid var(--cyan);border-radius:4px;box-shadow:0 0 14px #27e6e655,inset 0 0 12px #27e6e622}
+#strip.on{display:flex}
+#strip .nm{font-weight:800;font-size:20px;letter-spacing:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#strip .ld{margin-left:auto;color:var(--cyan);font-size:13px;white-space:nowrap}
+#list{margin-top:8px;background:var(--panel);border:2px solid var(--red);border-radius:4px;box-shadow:0 0 16px #ff2b2b55;opacity:0;visibility:hidden;transform:translateY(-10px);transition:opacity .4s,transform .4s,visibility .4s}
+#list.open{opacity:1;visibility:visible;transform:none}
+#list .hd{display:flex;align-items:center;gap:8px;padding:10px 14px;font-weight:800;font-size:15px;letter-spacing:3px;border-bottom:2px solid var(--cyan)}
+.row{display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid #27e6e633;font-size:17px}
+.row:last-child{border-bottom:0}
+.row .rk{color:var(--cyan);font-weight:800}
+.row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.row .sc{font-weight:800;color:var(--mint);text-shadow:0 0 8px var(--red)}
+.fb{font-size:10px;color:var(--red);border:1px solid var(--red);padding:1px 4px;border-radius:3px}
+.empty{padding:14px;color:#9fd;opacity:.6;font-size:14px}
+#alert{position:absolute;top:var(--alert-top);left:50%;transform:translateX(-50%) scale(.85);text-align:center;white-space:nowrap;opacity:0;transition:opacity .3s,transform .3s}
+#alert.on{opacity:1;transform:translateX(-50%) scale(1);animation:flick .8s}
+#alert .h{font-size:72px;font-weight:800;letter-spacing:4px}
+#alert .ln{height:2px;width:520px;margin:10px auto;background:var(--red);box-shadow:0 0 10px var(--red)}
+#alert.t-shot .ln{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
+#alert .s{font-size:26px;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
+@keyframes flick{0%{opacity:0}10%{opacity:1}18%{opacity:.35}26%{opacity:1}40%{opacity:.6}52%,100%{opacity:1}}
+#flash{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 160px 40px var(--red);opacity:0}
+#flash.go{animation:fl 1s}
+@keyframes fl{0%{opacity:0}20%{opacity:.65}100%{opacity:0}}
+#test{position:fixed;left:12px;bottom:12px;width:760px;min-height:90px;padding:20px;display:none;flex-wrap:wrap;gap:12px;background:#000d;border:2px solid var(--cyan);border-radius:8px;opacity:0;transition:opacity .2s;font-family:Arial,sans-serif}
+#test:hover{opacity:1}
+body.testmode #test{display:flex}
+#test b{width:100%;color:var(--cyan);font-size:26px}
+#test button{font:bold 26px Arial,sans-serif;padding:16px 24px;border:0;border-radius:8px;background:var(--cyan);color:#022;cursor:pointer}
+</style></head><body>
+<div id="flash"></div>
+<div id="panel">
+  <div id="strip"></div>
+  <div id="list"></div>
+</div>
+<div id="alert"><div class="h"></div><div class="ln"></div><div class="s"></div></div>
+<div id="test"><b>TEST (hover to see)</b>
+  <button data-t="s1">+1 random</button><button data-t="s5">+5 random</button>
+  <button data-t="a5">Alice +5</button><button data-t="b5">Bob +5</button>
+  <button data-t="board">Show board</button><button data-t="pin">Pin</button>
+  <button data-t="win">Winner</button><button data-t="reset">Reset</button><button data-t="bg">Preview BG</button>
+</div>
+<script>
+// ===== SETTINGS =====
+var CFG={firstBloodBonus:1,topN:5,boardMs:15000,remindEveryMs:600000,remindMs:15000,winnerBoardMs:12000,
+  alertMs:{shot:3000,barrage:4200,first:4200,dethrone:4800,winner:9000},
+  prio:{shot:1,barrage:2,first:3,dethrone:4,winner:5}};
+var FOOT='<svg width="22" height="26" viewBox="0 0 40 52" fill="none" stroke="#27e6e6" stroke-width="2.4" stroke-linecap="round"><circle cx="8" cy="17" r="3"/><circle cx="14" cy="10" r="3"/><circle cx="21" cy="8" r="3"/><circle cx="28" cy="10" r="3"/><circle cx="33" cy="17" r="3"/><path d="M6 25C4 35 8 46 18 48C28 50 34 42 33 31C32 25 30 23 22 23C14 23 8 21 6 25Z"/></svg>';
+var CROWN='<svg width="24" height="16" viewBox="0 0 32 20" fill="none" stroke="#ff2b2b" stroke-width="2.4" stroke-linejoin="round"><path d="M2 18L5 6L11 12L16 3L21 12L27 6L30 18Z"/></svg>';
+// ===== STATE (the Pi owns it; the overlay only draws what it is sent) =====
+var S={standings:[],king:null,first:null},pinned=false,boardT=null,finalT=null;
+var TEST=/[?&]test=1/.test(location.search);
+function el(t,c,x,h){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;if(h)e.innerHTML=h;return e;}
+function applyState(st){S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null};render();}
+// ===== MESSAGES =====
+// {kind:"snapshot",state}  sync only.   {kind:"alert",alert:{type,h,s},state[,final:true]}  play an alert.
+function handleMessage(m){
+  if(!m.final)clearTimeout(finalT);
+  if(m.state)applyState(m.state);
+  if(m.alert){
+    enqueue(m.alert);
+    if(m.final){showBoard(CFG.winnerBoardMs);finalT=setTimeout(function(){applyState({});},CFG.winnerBoardMs+600);}
+    else showBoard(CFG.boardMs);
+  }
+}
+// ===== ALERT QUEUE =====
+var Q=[],busy=false,alertEl=document.getElementById("alert");
+function enqueue(a){a.p=CFG.prio[a.type];Q.push(a);Q.sort(function(x,y){return y.p-x.p;});if(!busy)next();}
+function next(){
+  var a=Q.shift();if(!a){busy=false;return;}busy=true;
+  alertEl.className="";void alertEl.offsetWidth;
+  var h=alertEl.querySelector(".h");h.textContent=a.h;h.className="h "+(a.type==="shot"?"cy":"red");
+  alertEl.querySelector(".s").textContent=a.s;
+  alertEl.className="on t-"+a.type;
+  if(a.type!=="shot"){var f=document.getElementById("flash");f.className="";void f.offsetWidth;f.className="go";}
+  setTimeout(function(){alertEl.className="";setTimeout(next,350);},CFG.alertMs[a.type]);
+}
+// ===== BOARD =====
+function render(){
+  var strip=document.getElementById("strip"),list=document.getElementById("list");
+  strip.innerHTML="";list.innerHTML="";
+  if(S.king){
+    strip.className="on";
+    strip.appendChild(el("span","",null,CROWN));
+    strip.appendChild(el("span","nm red",S.king.name));
+    strip.appendChild(el("span","ld","LEAD "+S.king.lead));
+  }else strip.className="";
+  var hd=el("div","hd");hd.appendChild(el("span","",null,FOOT));hd.appendChild(el("span","cy","SOAK LEADERS"));list.appendChild(hd);
+  if(!S.standings.length)list.appendChild(el("div","empty","No shots yet tonight"));
+  S.standings.slice(0,CFG.topN).forEach(function(u,i){
+    var row=el("div","row");row.appendChild(el("span","rk","#"+(i+1)));
+    var nm=el("span","nm");if(S.king&&u.id===S.king.id)nm.innerHTML=CROWN;nm.appendChild(document.createTextNode(u.name));
+    if(u.id===S.first)nm.appendChild(el("span","fb","FB"));
+    row.appendChild(nm);row.appendChild(el("span","sc",u.score));list.appendChild(row);
+  });
+}
+function showBoard(ms){
+  var l=document.getElementById("list");l.className="open";clearTimeout(boardT);
+  if(!pinned)boardT=setTimeout(function(){l.className="";},ms);
+}
+setInterval(function(){if(S.king)showBoard(CFG.remindMs);},CFG.remindEveryMs);
+// ===== CONNECT TO THE PI =====
+if(!TEST){
+  var firstSnapshot=true,es=new EventSource("/events");   // reconnects on its own
+  es.onmessage=function(ev){
+    var m;try{m=JSON.parse(ev.data);}catch(e){return;}
+    handleMessage(m);
+    if(firstSnapshot){firstSnapshot=false;if(S.king)showBoard(CFG.remindMs);}
+  };
+}
+// ===== TEST PANEL (open /overlay?test=1; simulated in the browser, never touches the Pi) =====
+if(TEST)document.body.classList.add("testmode");
+var T;function simReset(){T={scores:{},seq:{},n:0,king:null,first:null};}simReset();
+function simRanked(){var u=Object.keys(T.scores);u.sort(function(a,b){return T.scores[b]-T.scores[a]||T.seq[a]-T.seq[b];});return u;}
+function simState(){
+  var r=simRanked(),k=T.king;
+  return{active:!!k,first_blood_id:T.first,
+    standings:r.slice(0,CFG.topN).map(function(u){return{id:u,name:u,score:T.scores[u]};}),
+    king:k?{id:k,name:k,score:T.scores[k],lead:T.scores[k]-(r[1]?T.scores[r[1]]:0)}:null};
+}
+function simShots(user,paid){
+  var pts=paid,isFirst=false,special=null;
+  if(!T.first){T.first=user;isFirst=true;pts+=CFG.firstBloodBonus;}
+  T.scores[user]=(T.scores[user]||0)+pts;T.seq[user]=++T.n;
+  if(!T.king){T.king=user;}
+  else if(user!==T.king&&T.scores[user]>T.scores[T.king]){
+    var old=T.king,m=T.scores[user]-T.scores[old];T.king=user;
+    special={type:"dethrone",h:"DETHRONED",s:user+" takes the crown from "+old+" | lead "+m};
+  }
+  if(!special&&isFirst)special={type:"first",h:"FIRST BLOOD",s:user+" draws first | +"+CFG.firstBloodBonus+" bonus"};
+  handleMessage({kind:"alert",state:simState(),alert:special||(paid>=5?{type:"barrage",h:"BARRAGE",s:user+" | "+paid+" SHOTS"}:{type:"shot",h:user,s:"FIRED "+paid+" SHOT"+(paid>1?"S":"")})});
+}
+function simWinner(){
+  if(!T.king)return;
+  handleMessage({kind:"alert",final:true,state:simState(),alert:{type:"winner",h:"CHAMPION",s:T.king+" wins with "+T.scores[T.king]+" shots"}});
+}
+var NAMES=["Alice","Bob","Cara","Dan","Eve"];
+function rnd(){return NAMES[Math.floor(Math.random()*NAMES.length)];}
+document.getElementById("test").addEventListener("click",function(e){
+  var b=e.target.closest("button");if(!b)return;var t=b.dataset.t;
+  if(t==="s1")simShots(rnd(),1);
+  if(t==="s5")simShots(rnd(),5);
+  if(t==="a5")simShots("Alice",5);
+  if(t==="b5")simShots("Bob",5);
+  if(t==="board"){render();showBoard(CFG.boardMs);}
+  if(t==="pin"){pinned=!pinned;b.textContent=pinned?"Unpin":"Pin";if(pinned){render();showBoard(0);}else showBoard(CFG.boardMs);}
+  if(t==="win")simWinner();
+  if(t==="reset"){simReset();handleMessage({kind:"snapshot",state:simState()});}
+  if(t==="bg")document.body.classList.toggle("dark");
+});
+render();
+</script></body></html>
