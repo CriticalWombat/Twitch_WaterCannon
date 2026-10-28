@@ -27,8 +27,10 @@ Session rules
     recap (podium, totals, First Blood, longest reign).
 """
 
+import functools
 import logging
 import sqlite3
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Callable, List, Optional
@@ -146,13 +148,24 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _locked(method):
+    """Run a public method under the scoreboard lock (the overlay server and the
+    scoring worker thread share one connection)."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return wrapper
+
+
 class Scoreboard:
     def __init__(self, path: str, first_blood_bonus: int = 1, idle_hours: float = 6,
                  clock: Callable[[], datetime] = _utcnow):
         self._bonus = first_blood_bonus
         self._idle = timedelta(hours=idle_hours)
         self._clock = clock
-        # Called from a worker thread (never concurrently: the caller awaits each call).
+        # Used from the event loop and from a worker thread; _lock serialises access.
+        self._lock = threading.RLock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._db:
@@ -164,6 +177,7 @@ class Scoreboard:
             cutoff = (self._clock() - timedelta(days=SEEN_EVENT_TTL_DAYS)).isoformat()
             self._db.execute("DELETE FROM seen_events WHERE seen_at < ?", (cutoff,))
 
+    @_locked
     def close(self) -> None:
         self._db.close()
 
@@ -264,6 +278,7 @@ class Scoreboard:
         )
 
     # -- sessions -----------------------------------------------------------
+    @_locked
     def start_session(self, event_id: Optional[str] = None,
                       grace_minutes: float = 15) -> StartResult:
         """Handle stream.online.
@@ -289,6 +304,7 @@ class Scoreboard:
                 closed = self._finish(row, now)
             return StartResult(self._insert_session(now)["id"], True, closed)
 
+    @_locked
     def end_session(self, event_id: Optional[str] = None) -> Optional[Recap]:
         """Handle stream.offline: close the open session and return its recap.
 
@@ -304,6 +320,7 @@ class Scoreboard:
                 return None
             return self._finish(row, self._clock())
 
+    @_locked
     def standings(self, limit: Optional[int] = None) -> List[tuple]:
         """(user_id, display_name, score) for the open session, best first."""
         row = self._open_row()
@@ -314,7 +331,30 @@ class Scoreboard:
             rows = rows[:limit]
         return [(r["user_id"], r["display_name"], r["score"]) for r in rows]
 
+    @_locked
+    def snapshot(self, top_n: int = 5) -> dict:
+        """The open session as plain data for the overlay (JSON-serialisable)."""
+        row = self._open_row()
+        if row is None:
+            return {"active": False, "session_id": None, "standings": [],
+                    "king": None, "first_blood_id": None}
+        rows = self._standing_rows(row["id"])
+        king = None
+        if rows:
+            second = rows[1]["score"] if len(rows) > 1 else 0
+            king = {"id": rows[0]["user_id"], "name": rows[0]["display_name"],
+                    "score": rows[0]["score"], "lead": rows[0]["score"] - second}
+        return {
+            "active": True,
+            "session_id": row["id"],
+            "standings": [{"id": r["user_id"], "name": r["display_name"], "score": r["score"]}
+                          for r in rows[:top_n]],
+            "king": king,
+            "first_blood_id": row["first_blood_id"],
+        }
+
     # -- scoring ------------------------------------------------------------
+    @_locked
     def record(self, event_id: Optional[str], user_id: str, display_name: str,
                shots: int) -> Optional[Result]:
         """Score one redemption. Returns None if the event was already seen.

@@ -108,6 +108,37 @@ class ScoringTests(unittest.TestCase):
     def test_empty_board(self):
         self.assertEqual(self.sb.standings(), [])
 
+    def test_snapshot_empty_when_no_session(self):
+        self.assertEqual(self.sb.snapshot(), {
+            "active": False, "session_id": None, "standings": [],
+            "king": None, "first_blood_id": None})
+
+    def test_snapshot_reports_king_lead_and_first_blood(self):
+        self.shot("a")                          # a = 2, First Blood
+        self.shot("b", 5)                       # b = 5, king, leads by 3
+        snap = self.sb.snapshot()
+        self.assertTrue(snap["active"])
+        self.assertEqual(snap["king"], {"id": "b", "name": "B", "score": 5, "lead": 3})
+        self.assertEqual(snap["first_blood_id"], "a")
+        self.assertEqual([s["id"] for s in snap["standings"]], ["b", "a"])
+
+    def test_snapshot_lead_when_alone_is_whole_score(self):
+        self.shot("a", 3)
+        self.assertEqual(self.sb.snapshot()["king"]["lead"], 4)
+
+    def test_snapshot_limits_standings_and_is_json_serialisable(self):
+        import json
+        for u in "abcdefg":
+            self.shot(u)
+        snap = self.sb.snapshot(top_n=3)
+        self.assertEqual(len(snap["standings"]), 3)
+        json.dumps(snap)
+
+    def test_snapshot_is_empty_after_the_session_closes(self):
+        self.shot("a")
+        self.sb.end_session("off")
+        self.assertFalse(self.sb.snapshot()["active"])
+
 
 if __name__ == "__main__":
     unittest.main()

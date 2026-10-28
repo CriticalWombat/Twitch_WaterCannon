@@ -119,3 +119,25 @@ Pi GND              ──→  relay/MOSFET GND
 - The app reconnects automatically on WebSocket drops.
 - In dry-run mode (non-Pi hardware / no RPi.GPIO), GPIO calls are logged
   but not executed — safe for local testing.
+
+---
+
+## Soak leaderboard & OBS overlay
+
+Every redemption also scores on a persistent leaderboard (SQLite in `./data/soak.db`):
+`Water Cannon` = 1 shot, `Water Cannon 5-shot` = 5 shots. The first redemption of a
+stream claims **First Blood** (+1), the highest score is **King of the Hill** (ties never
+dethrone), and `stream.offline` closes the session, crowns the winner and logs a recap.
+Scoring runs after the shot is queued, so it can never stop the cannon firing.
+
+Add an OBS **Browser Source** pointing at:
+
+```
+http://<pi-address>:5000/overlay
+```
+
+Append `?test=1` to preview the overlay with a local test panel (nothing touches the Pi).
+The web server is read-only and has no endpoint that can reach the cannon. Keep port 5000
+on your LAN; don't forward it from your router. Set `WEB_ENABLED=0` to turn it off.
+
+Tests: `python -m unittest discover -s tests -t .`

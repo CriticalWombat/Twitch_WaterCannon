@@ -24,6 +24,7 @@ import websockets
 from dotenv import load_dotenv
 
 import scoring
+import web
 
 # Load .env file if present – works when running directly with Python.
 # Docker Compose injects env vars on its own, so this is a no-op there.
@@ -63,6 +64,13 @@ SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "6"))        
 
 STREAM_STATUS_TYPES   = ("stream.online", "stream.offline")
 
+# Overlay web server (read-only; OBS loads http://<pi>:<port>/overlay as a browser source).
+WEB_ENABLED           = os.environ.get("WEB_ENABLED", "1") == "1"
+WEB_HOST              = os.environ.get("WEB_HOST", "0.0.0.0")
+WEB_PORT              = int(os.environ.get("WEB_PORT", "5000"))
+OVERLAY_TOP_N         = int(os.environ.get("OVERLAY_TOP_N", "5"))
+OVERLAY_PATH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.html")
+
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
 TWITCH_TOKEN_URL      = "https://id.twitch.tv/oauth2/token"
@@ -99,6 +107,16 @@ try:
 except Exception:
     scoreboard = None
     log.exception("Scoreboard unavailable – cannon will fire but scores will not be kept")
+
+hub = web.Hub()   # fans overlay messages out to every connected OBS browser source
+
+
+def current_state() -> dict:
+    """The leaderboard as the overlay sees it (empty if scoring is unavailable)."""
+    if scoreboard is None:
+        return {"active": False, "session_id": None, "standings": [],
+                "king": None, "first_blood_id": None}
+    return scoreboard.snapshot(OVERLAY_TOP_N)
 
 
 # ---------------------------------------------------------------------------
@@ -202,21 +220,24 @@ async def fire_cannon(duration: float):
         log.info("[DRY-RUN] Cycle complete")
 
 
-def record_score(event: dict, metadata: dict, user: str, shots: int) -> None:
-    """Score a redemption. Never raises: the shot is already queued."""
+def record_score(event: dict, metadata: dict, user: str, shots: int) -> list:
+    """Score a redemption and return the overlay messages to publish.
+
+    Never raises: the shot is already queued.
+    """
     if scoreboard is None:
-        return
+        return []
     try:
         user_id = event.get("user_id")
         if not user_id:
             log.warning("Redemption has no user_id – not scored")
-            return
+            return []
         event_id = event.get("id") or metadata.get("message_id")
         if not event_id:
             log.warning("Redemption has no event id – cannot dedupe")
         result = scoreboard.record(event_id, user_id, user, shots)
         if result is None:
-            return
+            return []
         log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
                  result.name, result.score, result.points,
                  " – FIRST BLOOD" if result.first_blood else "",
@@ -226,8 +247,10 @@ def record_score(event: dict, metadata: dict, user: str, shots: int) -> None:
             log.info("👑  %s dethroned %s by %d", d.new_name, d.old_name, d.margin)
         if result.closed_stale:
             log_recap(result.closed_stale, "Stale session closed")
+        return [web.alert_message(web.shot_alert(result, FIRST_BLOOD_BONUS), current_state())]
     except Exception:
         log.exception("Scoring failed – shot was already queued, continuing")
+        return []
 
 
 def log_recap(recap: scoring.Recap, label: str) -> None:
@@ -243,10 +266,13 @@ def log_recap(recap: scoring.Recap, label: str) -> None:
                  recap.longest_reign.name, recap.longest_reign.seconds / 60)
 
 
-def handle_stream_status(sub_type: str, metadata: dict) -> None:
-    """Start or close the soak session on stream.online / stream.offline. Never raises."""
+def handle_stream_status(sub_type: str, metadata: dict) -> list:
+    """Start or close the soak session on stream.online / stream.offline.
+
+    Returns the overlay messages to publish. Never raises.
+    """
     if scoreboard is None:
-        return
+        return []
     try:
         event_id = metadata.get("message_id")
         if sub_type == "stream.online":
@@ -255,14 +281,19 @@ def handle_stream_status(sub_type: str, metadata: dict) -> None:
                      "started" if started.created else "kept open", started.session_id)
             if started.closed:
                 log_recap(started.closed, "Stale session closed")
-        else:
-            recap = scoreboard.end_session(event_id)
-            if recap:
-                log_recap(recap, "Stream offline")
-            else:
-                log.info("Stream offline – nothing to recap")
+            return [web.snapshot_message(current_state())]
+        final_board = current_state()          # the board as it stood when the stream ended
+        recap = scoreboard.end_session(event_id)
+        if recap:
+            log_recap(recap, "Stream offline")
+            return [web.alert_message(web.winner_alert(recap), final_board, final=True)]
+        log.info("Stream offline – nothing to recap")
+        # Only tell the overlay to clear if an (empty) session was actually closed; a
+        # redelivered offline event must not wipe the champion board that is still showing.
+        return [web.snapshot_message(current_state())] if final_board["active"] else []
     except Exception:
         log.exception("Handling %s failed – continuing", sub_type)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +396,13 @@ async def run():
     # Start the single worker that serialises GPIO pulses.
     asyncio.create_task(cannon_worker(cannon_queue))
 
+    # Overlay server. If it can't start (port in use, missing file) the cannon is unaffected.
+    if WEB_ENABLED:
+        try:
+            await web.start(WEB_HOST, WEB_PORT, hub, current_state, OVERLAY_PATH)
+        except Exception:
+            log.exception("Overlay server could not start – the cannon is unaffected")
+
     async with httpx.AsyncClient() as http_client:
         # Always refresh on startup so we never run with a potentially stale token.
         await tokens.refresh(http_client)
@@ -398,7 +436,8 @@ async def run():
                             sub_type = (metadata.get("subscription_type")
                                         or payload.get("subscription", {}).get("type"))
                             log.info("Received %s", sub_type)
-                            await asyncio.to_thread(handle_stream_status, sub_type, metadata)
+                            for msg in await asyncio.to_thread(handle_stream_status, sub_type, metadata):
+                                hub.publish(msg)
 
                         # ── Notification: check for our reward ──────────────
                         elif msg_type == "notification":
@@ -423,8 +462,10 @@ async def run():
                                          user, cannon_queue.qsize())
                                 # Fire first, score second. Scoring runs in a worker thread so a
                                 # slow disk write can never delay the cannon.
-                                await asyncio.to_thread(
+                                messages = await asyncio.to_thread(
                                     record_score, event, metadata, user, REWARD_SHOTS[reward_title])
+                                for msg in messages:
+                                    hub.publish(msg)
 
                         # ── Reconnect requested by Twitch ───────────────────
                         elif msg_type == "session_reconnect":
@@ -464,5 +505,6 @@ if __name__ == "__main__":
     log.info("  GPIO pin    : BCM %d", GPIO_PIN)
     log.info("  Pulse dur.  : %.2fs", PULSE_DURATION_SEC)
     log.info("  5-shot dur. : %.2fs", PULSE_DURATION_5SHOT_SEC)
+    log.info("  Overlay     : %s", f"http://<this host>:{WEB_PORT}/overlay" if WEB_ENABLED else "disabled")
 
     asyncio.run(run())
