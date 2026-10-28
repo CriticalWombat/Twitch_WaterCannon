@@ -40,7 +40,7 @@ GPIO_PIN              = int(os.environ.get("GPIO_PIN", "4"))            # BCM nu
 PULSE_DURATION_SEC    = float(os.environ.get("PULSE_DURATION_SEC", "0.25"))
 
 # Second redeem: identical behaviour, just a longer pulse.
-REWARD_NAME_5SHOT        = os.environ.get("REWARD_NAME_5SHOT", "5-shot water cannon")   # must match exactly (case-sensitive)
+REWARD_NAME_5SHOT        = os.environ.get("REWARD_NAME_5SHOT", "Water Cannon 5-shot")   # must match exactly (case-sensitive)
 PULSE_DURATION_5SHOT_SEC = float(os.environ.get("PULSE_DURATION_5SHOT_SEC", "1.25"))
 
 # Redeem title -> pulse duration in seconds.
