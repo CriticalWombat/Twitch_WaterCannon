@@ -37,7 +37,7 @@ TWITCH_BROADCASTER_ID = os.environ.get("TWITCH_BROADCASTER_ID", "PLACEHOLDER_BRO
 
 REWARD_NAME           = os.environ.get("REWARD_NAME",  "Water Cannon (test)")   # must match exactly (case-sensitive)
 GPIO_PIN              = int(os.environ.get("GPIO_PIN", "4"))            # BCM numbering
-PULSE_DURATION_SEC    = float(os.environ.get("PULSE_DURATION_SEC", "5"))
+PULSE_DURATION_SEC    = float(os.environ.get("PULSE_DURATION_SEC", "0.25"))
 
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
