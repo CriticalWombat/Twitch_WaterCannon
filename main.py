@@ -39,6 +39,16 @@ REWARD_NAME           = os.environ.get("REWARD_NAME",  "Water Cannon (test)")   
 GPIO_PIN              = int(os.environ.get("GPIO_PIN", "4"))            # BCM numbering
 PULSE_DURATION_SEC    = float(os.environ.get("PULSE_DURATION_SEC", "0.25"))
 
+# Second redeem: identical behaviour, just a longer pulse.
+REWARD_NAME_5SHOT        = os.environ.get("REWARD_NAME_5SHOT", "Water Cannon 5-shot")   # must match exactly (case-sensitive)
+PULSE_DURATION_5SHOT_SEC = float(os.environ.get("PULSE_DURATION_5SHOT_SEC", "1.25"))
+
+# Redeem title -> pulse duration in seconds.
+REWARD_PULSES = {
+    REWARD_NAME:       PULSE_DURATION_SEC,
+    REWARD_NAME_5SHOT: PULSE_DURATION_5SHOT_SEC,
+}
+
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
 TWITCH_TOKEN_URL      = "https://id.twitch.tv/oauth2/token"
@@ -154,17 +164,17 @@ class TokenManager:
 # ---------------------------------------------------------------------------
 # GPIO / cannon helpers
 # ---------------------------------------------------------------------------
-async def fire_cannon():
-    """Pulse the GPIO pin HIGH for PULSE_DURATION_SEC seconds."""
+async def fire_cannon(duration: float):
+    """Pulse the GPIO pin HIGH for `duration` seconds."""
     if HAS_GPIO:
-        log.info("🔫  FIRING – pin %d HIGH for %.1fs", GPIO_PIN, PULSE_DURATION_SEC)
+        log.info("🔫  FIRING – pin %d HIGH for %.2fs", GPIO_PIN, duration)
         GPIO.output(GPIO_PIN, GPIO.HIGH)
-        await asyncio.sleep(PULSE_DURATION_SEC)
+        await asyncio.sleep(duration)
         GPIO.output(GPIO_PIN, GPIO.LOW)
         log.info("✅  Pin %d LOW – cannon cycle complete", GPIO_PIN)
     else:
-        log.info("[DRY-RUN] Would fire GPIO pin %d HIGH for %.1fs", GPIO_PIN, PULSE_DURATION_SEC)
-        await asyncio.sleep(PULSE_DURATION_SEC)
+        log.info("[DRY-RUN] Would fire GPIO pin %d HIGH for %.2fs", GPIO_PIN, duration)
+        await asyncio.sleep(duration)
         log.info("[DRY-RUN] Cycle complete")
 
 
@@ -174,13 +184,14 @@ async def fire_cannon():
 async def cannon_worker(queue: asyncio.Queue):
     """
     Runs forever in the background, processing queued redemptions in order.
-    Each item in the queue is a username string (used only for logging).
+    Each item in the queue is a (username, pulse_duration_sec) tuple; the
+    username is used only for logging.
     """
     while True:
-        user = await queue.get()
+        user, duration = await queue.get()
         log.info("🔫  Processing queued shot for %s (queue depth after this: %d)",
                  user, queue.qsize())
-        await fire_cannon()
+        await fire_cannon(duration)
         queue.task_done()
 
 
@@ -271,8 +282,9 @@ async def run():
 
                             log.info("Power-up redemption received: '%s' by %s", reward_title, user)
 
-                            if reward_title == REWARD_NAME:
-                                cannon_queue.put_nowait(user)
+                            duration = REWARD_PULSES.get(reward_title)
+                            if duration is not None:
+                                cannon_queue.put_nowait((user, duration))
                                 log.info("Queued shot for %s (queue depth: %d)",
                                          user, cannon_queue.qsize())
 
@@ -310,7 +322,9 @@ if __name__ == "__main__":
 
     log.info("Water Cannon controller starting up")
     log.info("  Reward name : %s", REWARD_NAME)
+    log.info("  5-shot name : %s", REWARD_NAME_5SHOT)
     log.info("  GPIO pin    : BCM %d", GPIO_PIN)
-    log.info("  Pulse dur.  : %.1fs", PULSE_DURATION_SEC)
+    log.info("  Pulse dur.  : %.2fs", PULSE_DURATION_SEC)
+    log.info("  5-shot dur. : %.2fs", PULSE_DURATION_5SHOT_SEC)
 
     asyncio.run(run())
