@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ─────────────────────────────────────────────────────────
-COPY main.py .
+COPY main.py scoring.py .
 
 # ── Run ─────────────────────────────────────────────────────────────────────
 CMD ["python", "-u", "main.py"]

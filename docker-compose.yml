@@ -17,6 +17,11 @@ services:
     env_file:
       - .env
 
+    # ── Persistent data ──────────────────────────────────────────────────────
+    # Scores live in /data/soak.db so rebuilds and restarts keep them.
+    volumes:
+      - ./data:/data
+
     # ── Logging ─────────────────────────────────────────────────────────────
     logging:
       driver: "json-file"
