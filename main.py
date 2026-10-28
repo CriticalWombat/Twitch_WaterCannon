@@ -23,6 +23,8 @@ import httpx
 import websockets
 from dotenv import load_dotenv
 
+import scoring
+
 # Load .env file if present – works when running directly with Python.
 # Docker Compose injects env vars on its own, so this is a no-op there.
 load_dotenv()
@@ -48,6 +50,14 @@ REWARD_PULSES = {
     REWARD_NAME:       PULSE_DURATION_SEC,
     REWARD_NAME_5SHOT: PULSE_DURATION_5SHOT_SEC,
 }
+
+# Redeem title -> shots scored on the soak leaderboard (150 Bits = 1, 450 Bits = 5).
+REWARD_SHOTS = {
+    REWARD_NAME:       int(os.environ.get("SHOTS_REWARD", "1")),
+    REWARD_NAME_5SHOT: int(os.environ.get("SHOTS_5SHOT",  "5")),
+}
+SCORE_DB_PATH         = os.environ.get("SCORE_DB_PATH", "/data/soak.db")
+FIRST_BLOOD_BONUS     = int(os.environ.get("FIRST_BLOOD_BONUS", "1"))
 
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
@@ -75,6 +85,16 @@ try:
 except (ImportError, RuntimeError) as exc:
     HAS_GPIO = False
     log.warning("RPi.GPIO not available (%s) – running in DRY-RUN mode", exc)
+
+# ---------------------------------------------------------------------------
+# Scoring  (optional: if the database can't be opened the cannon still works)
+# ---------------------------------------------------------------------------
+try:
+    scoreboard = scoring.Scoreboard(SCORE_DB_PATH, FIRST_BLOOD_BONUS)
+    log.info("Scoreboard ready at %s", SCORE_DB_PATH)
+except Exception:
+    scoreboard = None
+    log.exception("Scoreboard unavailable – cannon will fire but scores will not be kept")
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +196,32 @@ async def fire_cannon(duration: float):
         log.info("[DRY-RUN] Would fire GPIO pin %d HIGH for %.2fs", GPIO_PIN, duration)
         await asyncio.sleep(duration)
         log.info("[DRY-RUN] Cycle complete")
+
+
+def record_score(event: dict, metadata: dict, user: str, shots: int) -> None:
+    """Score a redemption. Never raises: the shot is already queued."""
+    if scoreboard is None:
+        return
+    try:
+        user_id = event.get("user_id")
+        if not user_id:
+            log.warning("Redemption has no user_id – not scored")
+            return
+        event_id = event.get("id") or metadata.get("message_id")
+        if not event_id:
+            log.warning("Redemption has no event id – cannot dedupe")
+        result = scoreboard.record(event_id, user_id, user, shots)
+        if result is None:
+            return
+        log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
+                 result.name, result.score, result.points,
+                 " – FIRST BLOOD" if result.first_blood else "",
+                 result.king_name, result.lead)
+        if result.dethrone:
+            d = result.dethrone
+            log.info("👑  %s dethroned %s by %d", d.new_name, d.old_name, d.margin)
+    except Exception:
+        log.exception("Scoring failed – shot was already queued, continuing")
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +327,20 @@ async def run():
                             user = event.get("user_name", "unknown")
 
                             log.info("Power-up redemption received: '%s' by %s", reward_title, user)
+                            # Field names only (no values) so we can confirm what Twitch sends.
+                            log.info("Notification fields: metadata=%s event=%s power_up=%s",
+                                     sorted(metadata), sorted(event),
+                                     sorted(event.get("custom_power_up", {})))
 
                             duration = REWARD_PULSES.get(reward_title)
                             if duration is not None:
                                 cannon_queue.put_nowait((user, duration))
                                 log.info("Queued shot for %s (queue depth: %d)",
                                          user, cannon_queue.qsize())
+                                # Fire first, score second. Scoring runs in a worker thread so a
+                                # slow disk write can never delay the cannon.
+                                await asyncio.to_thread(
+                                    record_score, event, metadata, user, REWARD_SHOTS[reward_title])
 
                         # ── Reconnect requested by Twitch ───────────────────
                         elif msg_type == "session_reconnect":
