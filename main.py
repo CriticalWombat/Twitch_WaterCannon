@@ -58,6 +58,10 @@ REWARD_SHOTS = {
 }
 SCORE_DB_PATH         = os.environ.get("SCORE_DB_PATH", "/data/soak.db")
 FIRST_BLOOD_BONUS     = int(os.environ.get("FIRST_BLOOD_BONUS", "1"))
+SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "15"))  # late stream.online keeps a session active this recently
+SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "6"))            # a session idle this long is closed as stale
+
+STREAM_STATUS_TYPES   = ("stream.online", "stream.offline")
 
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
@@ -90,7 +94,7 @@ except (ImportError, RuntimeError) as exc:
 # Scoring  (optional: if the database can't be opened the cannon still works)
 # ---------------------------------------------------------------------------
 try:
-    scoreboard = scoring.Scoreboard(SCORE_DB_PATH, FIRST_BLOOD_BONUS)
+    scoreboard = scoring.Scoreboard(SCORE_DB_PATH, FIRST_BLOOD_BONUS, SESSION_IDLE_HOURS)
     log.info("Scoreboard ready at %s", SCORE_DB_PATH)
 except Exception:
     scoreboard = None
@@ -220,8 +224,45 @@ def record_score(event: dict, metadata: dict, user: str, shots: int) -> None:
         if result.dethrone:
             d = result.dethrone
             log.info("👑  %s dethroned %s by %d", d.new_name, d.old_name, d.margin)
+        if result.closed_stale:
+            log_recap(result.closed_stale, "Stale session closed")
     except Exception:
         log.exception("Scoring failed – shot was already queued, continuing")
+
+
+def log_recap(recap: scoring.Recap, label: str) -> None:
+    """Write a session recap to the log (the overlay will show it in a later phase)."""
+    log.info("🏆  %s – session %d: %s wins with %d (win #%d)",
+             label, recap.session_id, recap.winner.name, recap.winner.score, recap.winner_wins)
+    log.info("    Podium: %s",
+             ", ".join(f"#{i} {s.name} {s.score}" for i, s in enumerate(recap.podium, 1)))
+    log.info("    %d viewers, %d points, First Blood: %s",
+             recap.participants, recap.total_points, recap.first_blood_name or "-")
+    if recap.longest_reign:
+        log.info("    Longest reign: %s, %.1f min",
+                 recap.longest_reign.name, recap.longest_reign.seconds / 60)
+
+
+def handle_stream_status(sub_type: str, metadata: dict) -> None:
+    """Start or close the soak session on stream.online / stream.offline. Never raises."""
+    if scoreboard is None:
+        return
+    try:
+        event_id = metadata.get("message_id")
+        if sub_type == "stream.online":
+            started = scoreboard.start_session(event_id, SESSION_ONLINE_GRACE_MIN)
+            log.info("Stream online – %s session %d",
+                     "started" if started.created else "kept open", started.session_id)
+            if started.closed:
+                log_recap(started.closed, "Stale session closed")
+        else:
+            recap = scoreboard.end_session(event_id)
+            if recap:
+                log_recap(recap, "Stream offline")
+            else:
+                log.info("Stream offline – nothing to recap")
+    except Exception:
+        log.exception("Handling %s failed – continuing", sub_type)
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +285,22 @@ async def cannon_worker(queue: asyncio.Queue):
 # ---------------------------------------------------------------------------
 # Twitch EventSub helpers
 # ---------------------------------------------------------------------------
+async def _post_subscription(
+    client: httpx.AsyncClient, tokens: TokenManager, payload: dict
+) -> httpx.Response:
+    """POST an EventSub subscription, refreshing the token once on a 401."""
+    response = await client.post(
+        TWITCH_EVENTSUB_URL, json=payload, headers=tokens.headers()
+    )
+    if response.status_code == 401:
+        log.warning("Got 401 on subscription – refreshing token and retrying …")
+        await tokens.refresh(client)
+        response = await client.post(
+            TWITCH_EVENTSUB_URL, json=payload, headers=tokens.headers()
+        )
+    return response
+
+
 async def subscribe_to_redemptions(
     session_id: str,
     client: httpx.AsyncClient,
@@ -262,22 +319,38 @@ async def subscribe_to_redemptions(
         },
     }
 
-    response = await client.post(
-        TWITCH_EVENTSUB_URL, json=payload, headers=tokens.headers()
-    )
-
-    if response.status_code == 401:
-        log.warning("Got 401 on subscription – refreshing token and retrying …")
-        await tokens.refresh(client)
-        response = await client.post(
-            TWITCH_EVENTSUB_URL, json=payload, headers=tokens.headers()
-        )
+    response = await _post_subscription(client, tokens, payload)
 
     if response.status_code in (200, 202):
         log.info("Subscribed to custom Power-up redemptions for broadcaster %s", TWITCH_BROADCASTER_ID)
     else:
         log.error("Failed to subscribe: %s %s", response.status_code, response.text)
         raise RuntimeError("EventSub subscription failed")
+
+
+async def subscribe_to_stream_status(
+    session_id: str,
+    client: httpx.AsyncClient,
+    tokens: TokenManager,
+) -> None:
+    """Subscribe to stream.online / stream.offline. Failures are logged, never raised:
+    the cannon must keep working even if session tracking can't be set up."""
+    for sub_type in STREAM_STATUS_TYPES:
+        payload = {
+            "type": sub_type,
+            "version": "1",
+            "condition": {"broadcaster_user_id": TWITCH_BROADCASTER_ID},
+            "transport": {"method": "websocket", "session_id": session_id},
+        }
+        try:
+            response = await _post_subscription(client, tokens, payload)
+            if response.status_code in (200, 202):
+                log.info("Subscribed to %s", sub_type)
+            else:
+                log.error("Failed to subscribe to %s: %s %s",
+                          sub_type, response.status_code, response.text)
+        except Exception:
+            log.exception("Failed to subscribe to %s", sub_type)
 
 
 # ---------------------------------------------------------------------------
@@ -311,10 +384,21 @@ async def run():
                             session_id = payload["session"]["id"]
                             log.info("Session ID: %s", session_id)
                             await subscribe_to_redemptions(session_id, http_client, tokens)
+                            await subscribe_to_stream_status(session_id, http_client, tokens)
 
                         # ── Keepalive: nothing to do ────────────────────────
                         elif msg_type == "session_keepalive":
                             log.debug("Keepalive received")
+
+                        # ── Stream went online / offline: start / close the session ──
+                        elif msg_type == "notification" and (
+                            metadata.get("subscription_type")
+                            or payload.get("subscription", {}).get("type")
+                        ) in STREAM_STATUS_TYPES:
+                            sub_type = (metadata.get("subscription_type")
+                                        or payload.get("subscription", {}).get("type"))
+                            log.info("Received %s", sub_type)
+                            await asyncio.to_thread(handle_stream_status, sub_type, metadata)
 
                         # ── Notification: check for our reward ──────────────
                         elif msg_type == "notification":
