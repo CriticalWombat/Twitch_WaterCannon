@@ -159,7 +159,7 @@ def _locked(method):
 
 
 class Scoreboard:
-    def __init__(self, path: str, first_blood_bonus: int = 1, idle_hours: float = 6,
+    def __init__(self, path: str, first_blood_bonus: int = 1, idle_hours: float = 3,
                  clock: Callable[[], datetime] = _utcnow):
         self._bonus = first_blood_bonus
         self._idle = timedelta(hours=idle_hours)
@@ -280,7 +280,7 @@ class Scoreboard:
     # -- sessions -----------------------------------------------------------
     @_locked
     def start_session(self, event_id: Optional[str] = None,
-                      grace_minutes: float = 15) -> StartResult:
+                      grace_minutes: float = 180) -> StartResult:
         """Handle stream.online.
 
         Keeps the open session if it is empty or saw activity within the grace

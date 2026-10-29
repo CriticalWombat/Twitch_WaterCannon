@@ -59,8 +59,8 @@ REWARD_SHOTS = {
 }
 SCORE_DB_PATH         = os.environ.get("SCORE_DB_PATH", "/data/soak.db")
 FIRST_BLOOD_BONUS     = int(os.environ.get("FIRST_BLOOD_BONUS", "1"))
-SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "15"))  # late stream.online keeps a session active this recently
-SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "6"))            # a session idle this long is closed as stale
+SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "180"))  # late stream.online keeps a session active this recently
+SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "3"))            # a session idle this long is closed as stale
 
 STREAM_STATUS_TYPES   = ("stream.online", "stream.offline")
 
