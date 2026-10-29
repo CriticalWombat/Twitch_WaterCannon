@@ -76,6 +76,8 @@ REVEAL_MINUTES_BEFORE = float(os.environ.get("REVEAL_MINUTES_BEFORE", "10"))
 REVEAL_WINDOW_MIN = float(os.environ.get("REVEAL_WINDOW_MIN", "10"))   # a restart inside this window still reveals
 REVEAL_TRIGGER_PATH = os.environ.get("REVEAL_TRIGGER_PATH", "/data/reveal-now")
 REVEAL_POLL_SEC = 5
+REVEAL_TEST_PATH = os.environ.get("REVEAL_TEST_PATH", "/data/reveal-in")   # create it to start a short test countdown
+test_countdown = reveal.ManualCountdown()
 
 # VIP badge for the night's winner. Off by default; VIP_DRY_RUN=1 only logs what it would do.
 # Needs a broadcaster token with the channel:manage:vips scope.
@@ -139,7 +141,8 @@ def reveal_info() -> dict:
         return {}
     try:
         now = datetime.now(ZoneInfo(STREAM_TZ))
-        start = reveal.next_start(now, reveal.parse_hhmm(STREAM_END_TIME), REVEAL_MINUTES_BEFORE)
+        start = test_countdown.due or reveal.next_start(
+            now, reveal.parse_hhmm(STREAM_END_TIME), REVEAL_MINUTES_BEFORE)   # a test countdown wins
         return {"reveal_at": int(start.timestamp() * 1000), "server_now": int(now.timestamp() * 1000)}
     except Exception:
         return {}
@@ -384,7 +387,9 @@ def schedule_vip(winner: scoring.Standing, reason: str) -> None:
 
 async def reveal_scheduler():
     """At STREAM_END_TIME minus REVEAL_MINUTES_BEFORE, reveal tonight's winner and
-    lock the results. Creating the file REVEAL_TRIGGER_PATH does the same on demand.
+    lock the results. Creating the file REVEAL_TRIGGER_PATH does the same on demand, and
+    creating REVEAL_TEST_PATH starts a short test countdown (15 s, or the number of seconds
+    written in the file) that locks when it runs out.
     Never raises: the cannon must keep working whatever happens here."""
     try:
         end = reveal.parse_hhmm(STREAM_END_TIME)
@@ -392,17 +397,34 @@ async def reveal_scheduler():
     except Exception:
         log.exception("Reveal scheduler disabled - check STREAM_END_TIME and STREAM_TZ")
         return
-    log.info("Winner reveal: %s %s minus %g min (window %g min); on demand: create %s",
+    log.info("Winner reveal: %s %s minus %g min (window %g min); on demand: create %s; "
+             "15 s test countdown: create %s",
              STREAM_END_TIME, STREAM_TZ, REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN,
-             REVEAL_TRIGGER_PATH)
+             REVEAL_TRIGGER_PATH, REVEAL_TEST_PATH)
     last_start = None
     while True:
-        await asyncio.sleep(REVEAL_POLL_SEC)
+        # Poll quickly while a test countdown runs, so the lock lands when the timer hits zero.
+        await asyncio.sleep(0.25 if test_countdown.due else REVEAL_POLL_SEC)
         try:
             reason = None
+            if os.path.exists(REVEAL_TEST_PATH):
+                try:
+                    with open(REVEAL_TEST_PATH, encoding="utf-8") as f:
+                        seconds = reveal.parse_test_seconds(f.read())
+                except OSError:
+                    seconds = reveal.DEFAULT_TEST_SECONDS
+                os.remove(REVEAL_TEST_PATH)
+                test_countdown.start(datetime.now(tz), seconds)
+                log.info("Test countdown started: the lock fires in %g s (the real schedule is untouched)",
+                         seconds)
+                hub.publish(web.snapshot_message(current_state()))     # overlays start counting now
             if os.path.exists(REVEAL_TRIGGER_PATH):
                 os.remove(REVEAL_TRIGGER_PATH)
+                test_countdown.clear()
                 reason = "manual"
+            elif test_countdown.is_due(datetime.now(tz)):
+                test_countdown.clear()
+                reason = "test countdown"
             else:
                 start = reveal.window_start(datetime.now(tz), end,
                                             REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN)
@@ -413,6 +435,8 @@ async def reveal_scheduler():
                 messages, recap = await asyncio.to_thread(handle_reveal, reason)
                 for msg in messages:
                     hub.publish(msg)
+                if not messages and reason == "test countdown":        # nothing to lock: clear the timer
+                    hub.publish(web.snapshot_message(current_state()))
                 if recap:       # the lock is committed and the alert is out: now the badge
                     schedule_vip(recap.winner, f"reveal, {reason}")
         except Exception:

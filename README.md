@@ -181,6 +181,18 @@ shows `Token scopes: ...` and `VIP: token can manage VIPs ...` so you can confir
 `VIP_ON_OFFLINE_FALLBACK=1` also grants the badge if `stream.offline` has to crown the winner
 because the reveal never ran (off by default).
 
+To rehearse the countdown and the lock without waiting for the real time, start a **test
+countdown**. The overlay counts down from 15 seconds (the leader card appears once someone has
+scored) and the real lock fires at zero, with the champion alert and, if the VIP badge is on,
+the badge hand-off. It does not touch the real schedule:
+
+```
+docker exec water-cannon touch /data/reveal-in                    # 15 seconds
+docker exec water-cannon sh -c 'echo 40 > /data/reveal-in'        # or any number of seconds (max 600)
+```
+
+Like any lock, it records a real win for the leader, so wipe the test data afterwards.
+
 To reveal on demand (note: this records a real win):
 
 ```
