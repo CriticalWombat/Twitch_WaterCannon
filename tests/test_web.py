@@ -226,13 +226,41 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("playSound(a.type)", html)
         self.assertIn("volume:0.6", html)
 
-    async def test_real_overlay_shows_the_countdown_on_the_leader_card(self):
+    async def test_real_overlay_countdown_is_a_bare_timer_in_the_last_ten_minutes(self):
         with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
             html = f.read()
-        for needle in ('"WINNER IN "', "REVEALING...", "RESULTS LOCKED", "reveal_at", "server_now",
-                       "NO LEADER YET", 'el("div","tm")', "clockOffset"):
+        for needle in ("reveal_at", "server_now", "clockOffset", "countdownShowMs:600000",
+                       "d>0&&d<=CFG.countdownShowMs"):
             self.assertIn(needle, html)
-        self.assertIn("S.king||S.revealAt", html)                  # the card is up even before anyone scores
+        for gone in ("WINNER IN", "REVEALING", "RESULTS LOCKED", "NO LEADER YET"):
+            self.assertNotIn(gone, html)                           # just the time, no label
+        self.assertIn("function fmtLeft(ms){var s=Math.max(0,Math.ceil(ms/1000));return Math.floor(s/60)", html)
+
+    async def test_real_overlay_leader_card_is_one_line(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("#strip{display:none;align-items:center;gap:10px;", html)
+        self.assertNotIn("flex-direction:column", html)
+        self.assertNotIn('"r1"', html)
+        self.assertIn('strip.appendChild(el("span","tm off"))', html)   # the timer sits on the same line
+        self.assertIn("if(S.king){", html)                         # the card is only up while someone leads
+
+    async def test_real_overlay_crown_is_yellow_and_fb_tag_is_blue(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        crown = html[html.index("var CROWN="):html.index("\n", html.index("var CROWN="))]
+        self.assertIn('stroke="#ffd23f"', crown)
+        self.assertNotIn("#ff2b2b", crown)                         # no red crown anywhere
+        self.assertEqual(html.count("var CROWN="), 1)              # one crown, used in the card and the board
+        self.assertIn(".fb{font-size:10px;color:var(--cyan);border:1px solid var(--cyan);", html)
+
+    async def test_real_overlay_returns_to_the_small_card_after_the_champion_alert(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertNotIn("showBoard(0)", html.split("// ===== TEST PANEL")[0])   # the final board is never pinned
+        self.assertIn("if(!pinned)boardT=setTimeout(", html)       # so it hides on the normal timer
+        self.assertIn("showBoard(CFG.winnerBoardMs);", html)       # final standings for a few seconds
+        self.assertIn("else if(!S.locked)showBoard(CFG.boardMs);", html)   # late shots only get their alert
 
     async def test_sound_is_served_with_audio_headers(self):
         resp = await self.get("/sounds/shot.mp3")

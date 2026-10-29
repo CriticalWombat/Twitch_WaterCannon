@@ -142,11 +142,12 @@ on your LAN; don't forward it from your router. Set `WEB_ENABLED=0` to turn it o
 
 ### Overlay sounds and the countdown
 
-The leader card in the top-right is always on screen. It shows the current leader and a
-**WINNER IN m:ss** countdown to the reveal; the timer pulses in the last minute, says
-REVEALING... at the moment, and turns into CHAMPION / RESULTS LOCKED once the winner is
-declared. The countdown uses the Pi's clock, so it is right whatever the OBS PC's timezone.
-While an alert plays the leaderboard list hides, then returns.
+The leader card in the top-right is a single line: a yellow crown, the leader, `LEAD n`, and
+in the last 10 minutes before the lock a bare countdown (`9:44`, pulsing in the final
+minute). At the lock you get the CHAMPION alert and the final standings for a few seconds,
+then the overlay returns to the small card, which now says CHAMPION. The countdown uses the
+Pi's clock, so it is right whatever the OBS PC's timezone. While an alert plays the
+leaderboard list hides, then returns.
 
 Each alert plays a sound from the `sounds/` folder next to `overlay.html`:
 `shot.mp3`, `barrage.mp3`, `firstblood.mp3`, `dethrone.mp3`, `winner.mp3`. Compose mounts
@@ -161,7 +162,8 @@ snipe the crown in the last seconds. At `STREAM_END_TIME` minus `REVEAL_MINUTES_
 (default 21:30 America/New_York minus 10 minutes) the Pi crowns the winner, counts one win and
 sends the Champion alert. The board is then **locked**: shots still fire the cannon and still
 count toward lifetime shots, but tonight's scores, crown and First Blood stop changing. The
-overlay keeps the board up, labelled FINAL RESULTS, until `stream.offline` clears it. If the
+overlay shows the CHAMPION alert and the final standings for a few seconds, then returns to
+the small leader card (CHAMPION) until `stream.offline` ends the session. If the
 reveal never ran, `stream.offline` crowns the winner as before.
 
 ### VIP badge for the winner
