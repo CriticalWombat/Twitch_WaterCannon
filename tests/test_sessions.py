@@ -59,7 +59,7 @@ class SessionTests(unittest.TestCase):
 
     def test_online_with_stale_session_closes_it_and_starts_fresh(self):
         old = self.shot("a")
-        self.clock.advance(hours=3)                     # offline was missed
+        self.clock.advance(hours=4)                     # offline was missed
         s = self.sb.start_session("on-1")
         self.assertTrue(s.created)
         self.assertNotEqual(s.session_id, old.session_id)
@@ -72,6 +72,22 @@ class SessionTests(unittest.TestCase):
         b = self.sb.start_session("on-2")
         self.assertFalse(b.created)
         self.assertEqual(a.session_id, b.session_id)
+
+    def test_online_never_keeps_a_locked_session(self):
+        # The night was revealed but the offline event was missed; a new stream starts
+        # within the grace window and must get a fresh, unlocked board.
+        self.shot("a")
+        self.shot("b", 5)
+        self.sb.lock_session()
+        self.clock.advance(minutes=30)
+        s = self.sb.start_session("on-2")
+        self.assertTrue(s.created)
+        self.assertIsNone(s.closed)                       # no second winner announced
+        self.assertEqual(self.sb.standings(), [])
+        r = self.shot("c")
+        self.assertFalse(r.locked)
+        self.assertTrue(r.first_blood)
+        self.assertEqual(r.score, 2)
 
     # -- end ------------------------------------------------------------------
     def test_offline_crowns_king_and_builds_recap(self):
@@ -145,7 +161,7 @@ class SessionTests(unittest.TestCase):
     # -- idle / stale ---------------------------------------------------------
     def test_idle_session_is_closed_by_next_redemption(self):
         old = self.shot("a", 5)
-        self.clock.advance(hours=7)                     # default idle limit is 6h
+        self.clock.advance(hours=4)                     # default idle limit is 3h
         r = self.shot("b")
         self.assertNotEqual(r.session_id, old.session_id)
         self.assertEqual(r.closed_stale.winner.user_id, "a")
@@ -154,7 +170,7 @@ class SessionTests(unittest.TestCase):
 
     def test_activity_within_idle_limit_keeps_session(self):
         old = self.shot("a")
-        self.clock.advance(hours=5)
+        self.clock.advance(hours=2)
         r = self.shot("b")
         self.assertEqual(r.session_id, old.session_id)
         self.assertIsNone(r.closed_stale)

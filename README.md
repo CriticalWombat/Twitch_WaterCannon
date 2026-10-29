@@ -140,4 +140,35 @@ Append `?test=1` to preview the overlay with a local test panel (nothing touches
 The web server is read-only and has no endpoint that can reach the cannon. Keep port 5000
 on your LAN; don't forward it from your router. Set `WEB_ENABLED=0` to turn it off.
 
+### Winner reveal
+
+On stream night the winner is revealed a few minutes **before** the stream ends so nobody can
+snipe the crown in the last seconds. At `STREAM_END_TIME` minus `REVEAL_MINUTES_BEFORE`
+(default 21:30 America/New_York minus 10 minutes) the Pi crowns the winner, counts one win and
+sends the Champion alert. The board is then **locked**: shots still fire the cannon and still
+count toward lifetime shots, but tonight's scores, crown and First Blood stop changing. The
+overlay keeps the board up, labelled FINAL RESULTS, until `stream.offline` clears it. If the
+reveal never ran, `stream.offline` crowns the winner as before.
+
+### VIP badge for the winner
+
+When `VIP_ENABLED=1`, the night's winner is made VIP **after** the results lock (never before).
+At that moment the badge is taken from the previous winner, then given to the new one. The bot
+only ever removes a badge it granted itself, so VIPs you chose by hand are never touched, and
+a winner who is already a hand-picked VIP is left as they are. The broadcaster and moderators
+cannot be made VIP and are skipped. Twitch errors are logged and retried a few times; they never
+affect the cannon or the reveal.
+
+It needs a broadcaster token with the `channel:manage:vips` scope. Start with `VIP_DRY_RUN=1`
+(the default), which only logs what it would do, then set `VIP_DRY_RUN=0`. At startup the log
+shows `Token scopes: ...` and `VIP: token can manage VIPs ...` so you can confirm the token.
+`VIP_ON_OFFLINE_FALLBACK=1` also grants the badge if `stream.offline` has to crown the winner
+because the reveal never ran (off by default).
+
+To reveal on demand (note: this records a real win):
+
+```
+docker exec water-cannon touch /data/reveal-now
+```
+
 Tests: `python -m unittest discover -s tests -t .`

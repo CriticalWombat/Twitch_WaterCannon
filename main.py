@@ -18,12 +18,16 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import websockets
 from dotenv import load_dotenv
 
+import reveal
 import scoring
+import vip
 import web
 
 # Load .env file if present – works when running directly with Python.
@@ -59,10 +63,25 @@ REWARD_SHOTS = {
 }
 SCORE_DB_PATH         = os.environ.get("SCORE_DB_PATH", "/data/soak.db")
 FIRST_BLOOD_BONUS     = int(os.environ.get("FIRST_BLOOD_BONUS", "1"))
-SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "15"))  # late stream.online keeps a session active this recently
-SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "6"))            # a session idle this long is closed as stale
+SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "180"))  # late stream.online keeps a session active this recently
+SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "3"))            # a session idle this long is closed as stale
 
 STREAM_STATUS_TYPES   = ("stream.online", "stream.offline")
+
+# Scheduled winner reveal: STREAM_END_TIME minus REVEAL_MINUTES_BEFORE locks the results.
+REVEAL_ENABLED = os.environ.get("REVEAL_ENABLED", "1") == "1"
+STREAM_END_TIME = os.environ.get("STREAM_END_TIME", "21:30")          # HH:MM, 24h, in STREAM_TZ
+STREAM_TZ = os.environ.get("STREAM_TZ", "America/New_York")
+REVEAL_MINUTES_BEFORE = float(os.environ.get("REVEAL_MINUTES_BEFORE", "10"))
+REVEAL_WINDOW_MIN = float(os.environ.get("REVEAL_WINDOW_MIN", "10"))   # a restart inside this window still reveals
+REVEAL_TRIGGER_PATH = os.environ.get("REVEAL_TRIGGER_PATH", "/data/reveal-now")
+REVEAL_POLL_SEC = 5
+
+# VIP badge for the night's winner. Off by default; VIP_DRY_RUN=1 only logs what it would do.
+# Needs a broadcaster token with the channel:manage:vips scope.
+VIP_ENABLED = os.environ.get("VIP_ENABLED", "0") == "1"
+VIP_DRY_RUN = os.environ.get("VIP_DRY_RUN", "1") == "1"
+VIP_ON_OFFLINE_FALLBACK = os.environ.get("VIP_ON_OFFLINE_FALLBACK", "0") == "1"  # also grant it if stream.offline crowns the winner
 
 # Overlay web server (read-only; OBS loads http://<pi>:<port>/overlay as a browser source).
 WEB_ENABLED           = os.environ.get("WEB_ENABLED", "1") == "1"
@@ -193,6 +212,8 @@ class TokenManager:
 
             expires_in = data.get("expires_in", "unknown")
             log.info("Access token refreshed (expires_in=%s seconds)", expires_in)
+            # Scope names are not secret; logging them shows what this token is allowed to do.
+            log.info("Token scopes: %s", ", ".join(data.get("scope") or []) or "not reported")
 
     async def ensure_fresh(self, client: httpx.AsyncClient) -> None:
         """
@@ -238,10 +259,14 @@ def record_score(event: dict, metadata: dict, user: str, shots: int) -> list:
         result = scoreboard.record(event_id, user_id, user, shots)
         if result is None:
             return []
-        log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
-                 result.name, result.score, result.points,
-                 " – FIRST BLOOD" if result.first_blood else "",
-                 result.king_name, result.lead)
+        if result.locked:
+            log.info("Board locked – %s's %d shot(s) fired, scores unchanged",
+                     result.name, result.shots)
+        else:
+            log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
+                     result.name, result.score, result.points,
+                     " – FIRST BLOOD" if result.first_blood else "",
+                     result.king_name, result.lead)
         if result.dethrone:
             d = result.dethrone
             log.info("👑  %s dethroned %s by %d", d.new_name, d.old_name, d.margin)
@@ -266,13 +291,14 @@ def log_recap(recap: scoring.Recap, label: str) -> None:
                  recap.longest_reign.name, recap.longest_reign.seconds / 60)
 
 
-def handle_stream_status(sub_type: str, metadata: dict) -> list:
+def handle_stream_status(sub_type: str, metadata: dict) -> tuple:
     """Start or close the soak session on stream.online / stream.offline.
 
-    Returns the overlay messages to publish. Never raises.
+    Returns (overlay messages to publish, the recap if this call crowned a winner).
+    Never raises.
     """
     if scoreboard is None:
-        return []
+        return [], None
     try:
         event_id = metadata.get("message_id")
         if sub_type == "stream.online":
@@ -281,19 +307,98 @@ def handle_stream_status(sub_type: str, metadata: dict) -> list:
                      "started" if started.created else "kept open", started.session_id)
             if started.closed:
                 log_recap(started.closed, "Stale session closed")
-            return [web.snapshot_message(current_state())]
+            return [web.snapshot_message(current_state())], None
         final_board = current_state()          # the board as it stood when the stream ended
         recap = scoreboard.end_session(event_id)
         if recap:
             log_recap(recap, "Stream offline")
-            return [web.alert_message(web.winner_alert(recap), final_board, final=True)]
-        log.info("Stream offline – nothing to recap")
+            return [web.alert_message(web.winner_alert(recap), final_board, final=True)], recap
+        log.info("Stream offline – winner already revealed" if final_board.get("locked")
+                 else "Stream offline – nothing to recap")
         # Only tell the overlay to clear if an (empty) session was actually closed; a
         # redelivered offline event must not wipe the champion board that is still showing.
-        return [web.snapshot_message(current_state())] if final_board["active"] else []
+        return ([web.snapshot_message(current_state())] if final_board["active"] else []), None
     except Exception:
         log.exception("Handling %s failed – continuing", sub_type)
-        return []
+        return [], None
+
+
+def handle_reveal(reason: str) -> tuple:
+    """Reveal tonight's winner and lock the results. Returns (overlay messages to
+    publish, the recap). Never raises. Does nothing if there is no open session,
+    nobody has scored yet, or the winner was already revealed."""
+    if scoreboard is None:
+        return [], None
+    try:
+        recap = scoreboard.lock_session()
+        if recap is None:
+            log.info("Reveal (%s): nothing to reveal (no session, no scores, or already revealed)", reason)
+            return [], None
+        log_recap(recap, f"Winner revealed ({reason})")
+        return [web.alert_message(web.winner_alert(recap), current_state(), final=True)], recap
+    except Exception:
+        log.exception("Reveal failed - continuing")
+        return [], None
+
+
+vip_client = None        # set in run() once the Twitch token is ready
+_vip_tasks: set = set()  # keeps background badge tasks alive until they finish
+
+
+def schedule_vip(winner: scoring.Standing, reason: str) -> None:
+    """Hand the VIP badge to the winner in the background. Never raises, and only
+    ever called after the results are locked."""
+    if not VIP_ENABLED:
+        return
+    if vip_client is None or scoreboard is None:
+        log.warning("VIP: not ready – the badge for %s was not assigned (%s)", winner.name, reason)
+        return
+    try:
+        log.info("VIP: assigning the badge to %s (%s)%s", winner.name, reason,
+                 " – DRY RUN" if VIP_DRY_RUN else "")
+        task = asyncio.create_task(vip.assign_with_retries(
+            vip_client, scoreboard, TWITCH_BROADCASTER_ID, winner.user_id, winner.name, VIP_DRY_RUN))
+        _vip_tasks.add(task)
+        task.add_done_callback(_vip_tasks.discard)
+    except Exception:
+        log.exception("VIP: could not start the badge task - continuing")
+
+
+async def reveal_scheduler():
+    """At STREAM_END_TIME minus REVEAL_MINUTES_BEFORE, reveal tonight's winner and
+    lock the results. Creating the file REVEAL_TRIGGER_PATH does the same on demand.
+    Never raises: the cannon must keep working whatever happens here."""
+    try:
+        end = reveal.parse_hhmm(STREAM_END_TIME)
+        tz = ZoneInfo(STREAM_TZ)
+    except Exception:
+        log.exception("Reveal scheduler disabled - check STREAM_END_TIME and STREAM_TZ")
+        return
+    log.info("Winner reveal: %s %s minus %g min (window %g min); on demand: create %s",
+             STREAM_END_TIME, STREAM_TZ, REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN,
+             REVEAL_TRIGGER_PATH)
+    last_start = None
+    while True:
+        await asyncio.sleep(REVEAL_POLL_SEC)
+        try:
+            reason = None
+            if os.path.exists(REVEAL_TRIGGER_PATH):
+                os.remove(REVEAL_TRIGGER_PATH)
+                reason = "manual"
+            else:
+                start = reveal.window_start(datetime.now(tz), end,
+                                            REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN)
+                if start is not None and start != last_start:
+                    last_start = start
+                    reason = "scheduled"
+            if reason:
+                messages, recap = await asyncio.to_thread(handle_reveal, reason)
+                for msg in messages:
+                    hub.publish(msg)
+                if recap:       # the lock is committed and the alert is out: now the badge
+                    schedule_vip(recap.winner, f"reveal, {reason}")
+        except Exception:
+            log.exception("Reveal scheduler error - continuing")
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +493,7 @@ async def subscribe_to_stream_status(
 # Main WebSocket loop
 # ---------------------------------------------------------------------------
 async def run():
+    global vip_client
     tokens = TokenManager(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, TWITCH_REFRESH_TOKEN)
 
     # Unbounded queue – every redemption is honoured in arrival order.
@@ -395,6 +501,8 @@ async def run():
 
     # Start the single worker that serialises GPIO pulses.
     asyncio.create_task(cannon_worker(cannon_queue))
+    if REVEAL_ENABLED:
+        reveal_task = asyncio.create_task(reveal_scheduler())
 
     # Overlay server. If it can't start (port in use, missing file) the cannon is unaffected.
     if WEB_ENABLED:
@@ -406,6 +514,15 @@ async def run():
     async with httpx.AsyncClient() as http_client:
         # Always refresh on startup so we never run with a potentially stale token.
         await tokens.refresh(http_client)
+
+        if VIP_ENABLED:
+            vip_client = vip.VipClient(http_client, tokens, TWITCH_BROADCASTER_ID)
+            try:       # read-only: proves the token has the VIP scope without changing anything
+                count = await vip_client.preflight()
+                log.info("VIP: token can manage VIPs (%d VIP(s) in the channel)%s", count,
+                         " – DRY RUN, no changes will be made" if VIP_DRY_RUN else "")
+            except Exception as exc:
+                log.error("VIP: preflight failed – %s (the badge will not be assigned until fixed)", exc)
 
         while True:  # reconnect loop
             try:
@@ -436,8 +553,12 @@ async def run():
                             sub_type = (metadata.get("subscription_type")
                                         or payload.get("subscription", {}).get("type"))
                             log.info("Received %s", sub_type)
-                            for msg in await asyncio.to_thread(handle_stream_status, sub_type, metadata):
+                            messages, crowned = await asyncio.to_thread(
+                                handle_stream_status, sub_type, metadata)
+                            for msg in messages:
                                 hub.publish(msg)
+                            if crowned and VIP_ON_OFFLINE_FALLBACK:
+                                schedule_vip(crowned.winner, "stream offline, no reveal ran")
 
                         # ── Notification: check for our reward ──────────────
                         elif msg_type == "notification":
@@ -505,6 +626,8 @@ if __name__ == "__main__":
     log.info("  GPIO pin    : BCM %d", GPIO_PIN)
     log.info("  Pulse dur.  : %.2fs", PULSE_DURATION_SEC)
     log.info("  5-shot dur. : %.2fs", PULSE_DURATION_5SHOT_SEC)
+    log.info("  VIP badge   : %s", "off" if not VIP_ENABLED else
+             ("DRY RUN" if VIP_DRY_RUN else "on") + (", incl. offline fallback" if VIP_ON_OFFLINE_FALLBACK else ""))
     log.info("  Overlay     : %s", f"http://<this host>:{WEB_PORT}/overlay" if WEB_ENABLED else "disabled")
 
     asyncio.run(run())

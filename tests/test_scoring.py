@@ -111,7 +111,7 @@ class ScoringTests(unittest.TestCase):
     def test_snapshot_empty_when_no_session(self):
         self.assertEqual(self.sb.snapshot(), {
             "active": False, "session_id": None, "standings": [],
-            "king": None, "first_blood_id": None})
+            "king": None, "first_blood_id": None, "locked": False})
 
     def test_snapshot_reports_king_lead_and_first_blood(self):
         self.shot("a")                          # a = 2, First Blood

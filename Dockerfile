@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ─────────────────────────────────────────────────────────
-COPY main.py scoring.py web.py overlay.html .
+COPY main.py scoring.py web.py reveal.py vip.py overlay.html .
 
 # ── Run ─────────────────────────────────────────────────────────────────────
 CMD ["python", "-u", "main.py"]
