@@ -216,6 +216,7 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("var FOOT", html)                         # header footprint icon removed
         self.assertIn('S.locked?"CHAMPION":"LEAD "', html)         # leader strip says CHAMPION once locked
         self.assertIn("Reveal in 1 min", html)
+        self.assertIn("Reveal in 15 sec", html)                    # quick preview of the countdown
 
     async def test_real_overlay_plays_a_sound_per_alert_type(self):
         with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:

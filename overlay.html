@@ -55,7 +55,7 @@ body.testmode #test{display:flex}
   <button data-t="s1">+1 random</button><button data-t="s5">+5 random</button>
   <button data-t="a5">Alice +5</button><button data-t="b5">Bob +5</button>
   <button data-t="board">Show board</button><button data-t="pin">Pin</button>
-  <button data-t="win">Winner</button><button data-t="rv">Reveal in 1 min</button><button data-t="reset">Reset</button><button data-t="bg">Preview BG</button>
+  <button data-t="win">Winner</button><button data-t="rv15">Reveal in 15 sec</button><button data-t="rv">Reveal in 1 min</button><button data-t="reset">Reset</button><button data-t="bg">Preview BG</button>
 </div>
 <script>
 // ===== SETTINGS =====
@@ -211,6 +211,7 @@ document.getElementById("test").addEventListener("click",function(e){
   if(t==="pin"){pinned=!pinned;b.textContent=pinned?"Unpin":"Pin";if(pinned){render();showBoard(0);}else showBoard(CFG.boardMs);}
   if(t==="win")simWinner();
   if(t==="rv"){T.revealAt=Date.now()+60000;applyState(simState());}
+  if(t==="rv15"){T.revealAt=Date.now()+15000;applyState(simState());}
   if(t==="reset"){simReset();handleMessage({kind:"snapshot",state:simState()});}
   if(t==="bg")document.body.classList.toggle("dark");
 });
