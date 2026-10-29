@@ -67,6 +67,10 @@ CREATE TABLE IF NOT EXISTS seen_events (
     event_id TEXT PRIMARY KEY,
     seen_at  TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS vip_holders (
+    user_id    TEXT PRIMARY KEY,
+    granted_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reigns (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
@@ -360,6 +364,29 @@ class Scoreboard:
         if limit is not None:
             rows = rows[:limit]
         return [(r["user_id"], r["display_name"], r["score"]) for r in rows]
+
+    # -- VIP badge (who the bot granted it to) ------------------------------
+    @_locked
+    def vip_holders(self) -> List[tuple]:
+        """(user_id, display_name) of everyone the bot has made VIP and not yet un-VIPed."""
+        rows = self._db.execute(
+            "SELECT h.user_id, COALESCE(v.display_name, h.user_id) "
+            "FROM vip_holders h LEFT JOIN viewers v USING (user_id) ORDER BY h.granted_at"
+        ).fetchall()
+        return [(r[0], r[1]) for r in rows]
+
+    @_locked
+    def add_vip_holder(self, user_id: str) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO vip_holders (user_id, granted_at) VALUES (?, ?)",
+                (user_id, self._clock().isoformat()),
+            )
+
+    @_locked
+    def remove_vip_holder(self, user_id: str) -> None:
+        with self._db:
+            self._db.execute("DELETE FROM vip_holders WHERE user_id = ?", (user_id,))
 
     @_locked
     def snapshot(self, top_n: int = 5) -> dict:

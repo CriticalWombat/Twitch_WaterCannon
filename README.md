@@ -150,6 +150,21 @@ count toward lifetime shots, but tonight's scores, crown and First Blood stop ch
 overlay keeps the board up, labelled FINAL RESULTS, until `stream.offline` clears it. If the
 reveal never ran, `stream.offline` crowns the winner as before.
 
+### VIP badge for the winner
+
+When `VIP_ENABLED=1`, the night's winner is made VIP **after** the results lock (never before).
+At that moment the badge is taken from the previous winner, then given to the new one. The bot
+only ever removes a badge it granted itself, so VIPs you chose by hand are never touched, and
+a winner who is already a hand-picked VIP is left as they are. The broadcaster and moderators
+cannot be made VIP and are skipped. Twitch errors are logged and retried a few times; they never
+affect the cannon or the reveal.
+
+It needs a broadcaster token with the `channel:manage:vips` scope. Start with `VIP_DRY_RUN=1`
+(the default), which only logs what it would do, then set `VIP_DRY_RUN=0`. At startup the log
+shows `Token scopes: ...` and `VIP: token can manage VIPs ...` so you can confirm the token.
+`VIP_ON_OFFLINE_FALLBACK=1` also grants the badge if `stream.offline` has to crown the winner
+because the reveal never ran (off by default).
+
 To reveal on demand (note: this records a real win):
 
 ```
