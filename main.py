@@ -18,11 +18,14 @@ import logging
 import os
 import signal
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 import websockets
 from dotenv import load_dotenv
 
+import reveal
 import scoring
 import web
 
@@ -63,6 +66,15 @@ SESSION_ONLINE_GRACE_MIN = float(os.environ.get("SESSION_ONLINE_GRACE_MIN", "180
 SESSION_IDLE_HOURS    = float(os.environ.get("SESSION_IDLE_HOURS", "3"))            # a session idle this long is closed as stale
 
 STREAM_STATUS_TYPES   = ("stream.online", "stream.offline")
+
+# Scheduled winner reveal: STREAM_END_TIME minus REVEAL_MINUTES_BEFORE locks the results.
+REVEAL_ENABLED = os.environ.get("REVEAL_ENABLED", "1") == "1"
+STREAM_END_TIME = os.environ.get("STREAM_END_TIME", "21:30")          # HH:MM, 24h, in STREAM_TZ
+STREAM_TZ = os.environ.get("STREAM_TZ", "America/New_York")
+REVEAL_MINUTES_BEFORE = float(os.environ.get("REVEAL_MINUTES_BEFORE", "10"))
+REVEAL_WINDOW_MIN = float(os.environ.get("REVEAL_WINDOW_MIN", "10"))   # a restart inside this window still reveals
+REVEAL_TRIGGER_PATH = os.environ.get("REVEAL_TRIGGER_PATH", "/data/reveal-now")
+REVEAL_POLL_SEC = 5
 
 # Overlay web server (read-only; OBS loads http://<pi>:<port>/overlay as a browser source).
 WEB_ENABLED           = os.environ.get("WEB_ENABLED", "1") == "1"
@@ -238,10 +250,14 @@ def record_score(event: dict, metadata: dict, user: str, shots: int) -> list:
         result = scoreboard.record(event_id, user_id, user, shots)
         if result is None:
             return []
-        log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
-                 result.name, result.score, result.points,
-                 " – FIRST BLOOD" if result.first_blood else "",
-                 result.king_name, result.lead)
+        if result.locked:
+            log.info("Board locked – %s's %d shot(s) fired, scores unchanged",
+                     result.name, result.shots)
+        else:
+            log.info("Score: %s now has %d (+%d)%s | king %s, lead %d",
+                     result.name, result.score, result.points,
+                     " – FIRST BLOOD" if result.first_blood else "",
+                     result.king_name, result.lead)
         if result.dethrone:
             d = result.dethrone
             log.info("👑  %s dethroned %s by %d", d.new_name, d.old_name, d.margin)
@@ -287,13 +303,66 @@ def handle_stream_status(sub_type: str, metadata: dict) -> list:
         if recap:
             log_recap(recap, "Stream offline")
             return [web.alert_message(web.winner_alert(recap), final_board, final=True)]
-        log.info("Stream offline – nothing to recap")
+        log.info("Stream offline – winner already revealed" if final_board.get("locked")
+                 else "Stream offline – nothing to recap")
         # Only tell the overlay to clear if an (empty) session was actually closed; a
         # redelivered offline event must not wipe the champion board that is still showing.
         return [web.snapshot_message(current_state())] if final_board["active"] else []
     except Exception:
         log.exception("Handling %s failed – continuing", sub_type)
         return []
+
+
+def handle_reveal(reason: str) -> list:
+    """Reveal tonight's winner and lock the results. Returns the overlay messages
+    to publish. Never raises. Does nothing if there is no open session, nobody has
+    scored yet, or the winner was already revealed."""
+    if scoreboard is None:
+        return []
+    try:
+        recap = scoreboard.lock_session()
+        if recap is None:
+            log.info("Reveal (%s): nothing to reveal (no session, no scores, or already revealed)", reason)
+            return []
+        log_recap(recap, f"Winner revealed ({reason})")
+        return [web.alert_message(web.winner_alert(recap), current_state(), final=True)]
+    except Exception:
+        log.exception("Reveal failed - continuing")
+        return []
+
+
+async def reveal_scheduler():
+    """At STREAM_END_TIME minus REVEAL_MINUTES_BEFORE, reveal tonight's winner and
+    lock the results. Creating the file REVEAL_TRIGGER_PATH does the same on demand.
+    Never raises: the cannon must keep working whatever happens here."""
+    try:
+        end = reveal.parse_hhmm(STREAM_END_TIME)
+        tz = ZoneInfo(STREAM_TZ)
+    except Exception:
+        log.exception("Reveal scheduler disabled - check STREAM_END_TIME and STREAM_TZ")
+        return
+    log.info("Winner reveal: %s %s minus %g min (window %g min); on demand: create %s",
+             STREAM_END_TIME, STREAM_TZ, REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN,
+             REVEAL_TRIGGER_PATH)
+    last_start = None
+    while True:
+        await asyncio.sleep(REVEAL_POLL_SEC)
+        try:
+            reason = None
+            if os.path.exists(REVEAL_TRIGGER_PATH):
+                os.remove(REVEAL_TRIGGER_PATH)
+                reason = "manual"
+            else:
+                start = reveal.window_start(datetime.now(tz), end,
+                                            REVEAL_MINUTES_BEFORE, REVEAL_WINDOW_MIN)
+                if start is not None and start != last_start:
+                    last_start = start
+                    reason = "scheduled"
+            if reason:
+                for msg in await asyncio.to_thread(handle_reveal, reason):
+                    hub.publish(msg)
+        except Exception:
+            log.exception("Reveal scheduler error - continuing")
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +464,8 @@ async def run():
 
     # Start the single worker that serialises GPIO pulses.
     asyncio.create_task(cannon_worker(cannon_queue))
+    if REVEAL_ENABLED:
+        reveal_task = asyncio.create_task(reveal_scheduler())
 
     # Overlay server. If it can't start (port in use, missing file) the cannon is unaffected.
     if WEB_ENABLED:

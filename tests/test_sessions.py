@@ -73,6 +73,22 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(b.created)
         self.assertEqual(a.session_id, b.session_id)
 
+    def test_online_never_keeps_a_locked_session(self):
+        # The night was revealed but the offline event was missed; a new stream starts
+        # within the grace window and must get a fresh, unlocked board.
+        self.shot("a")
+        self.shot("b", 5)
+        self.sb.lock_session()
+        self.clock.advance(minutes=30)
+        s = self.sb.start_session("on-2")
+        self.assertTrue(s.created)
+        self.assertIsNone(s.closed)                       # no second winner announced
+        self.assertEqual(self.sb.standings(), [])
+        r = self.shot("c")
+        self.assertFalse(r.locked)
+        self.assertTrue(r.first_blood)
+        self.assertEqual(r.score, 2)
+
     # -- end ------------------------------------------------------------------
     def test_offline_crowns_king_and_builds_recap(self):
         self.sb.start_session("on-1")

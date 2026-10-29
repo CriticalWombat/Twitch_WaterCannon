@@ -81,6 +81,7 @@ MIGRATIONS = [
     ("viewers",  "wins",          "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "winner_id",     "TEXT"),
     ("sessions", "last_event_at", "TEXT"),
+    ("sessions", "locked_at",     "TEXT"),
 ]
 
 
@@ -142,6 +143,7 @@ class Result:
     lead: int           # the king's lead over second place (whole score if alone)
     dethrone: Optional[Dethrone]
     closed_stale: Optional[Recap] = None  # an idle session closed to start this one
+    locked: bool = False  # board was locked: shot fired, score unchanged
 
 
 def _utcnow() -> datetime:
@@ -219,7 +221,7 @@ class Scoreboard:
             (sid,),
         ).fetchall()
 
-    def _finish(self, row: sqlite3.Row, now: datetime) -> Optional[Recap]:
+    def _finish(self, row: sqlite3.Row, now: datetime, lock_only: bool = False) -> Optional[Recap]:
         """Close a session: crown the winner, count the win, build the recap.
 
         Returns None for a session nobody scored in. Runs inside the caller's
@@ -227,14 +229,20 @@ class Scoreboard:
         """
         sid = row["id"]
         stamp = now.isoformat()
+        if row["locked_at"] and not lock_only:
+            # Winner was crowned and counted at the reveal: just close the session.
+            self._db.execute("UPDATE sessions SET ended_at = ? WHERE id = ?", (stamp, sid))
+            log.info("Closed session %d (winner already revealed)", sid)
+            return None
         standings = self._standing_rows(sid)
         self._db.execute(
             "UPDATE reigns SET ended_at = ? WHERE session_id = ? AND ended_at IS NULL",
             (stamp, sid),
         )
         winner_id = row["king_id"] or (standings[0]["user_id"] if standings else None)
+        column = "locked_at" if lock_only else "ended_at"
         self._db.execute(
-            "UPDATE sessions SET ended_at = ?, winner_id = ? WHERE id = ?",
+            f"UPDATE sessions SET {column} = ?, winner_id = ? WHERE id = ?",
             (stamp, winner_id, sid),
         )
         if not standings:
@@ -265,7 +273,8 @@ class Scoreboard:
             if longest is None or secs > longest.seconds:
                 longest = Reign(r["user_id"], r["display_name"], secs)
 
-        log.info("Closed session %d, winner %s", sid, winner["display_name"])
+        log.info("%s session %d, winner %s", "Locked" if lock_only else "Closed",
+                 sid, winner["display_name"])
         return Recap(
             session_id=sid, started_at=row["started_at"], ended_at=stamp,
             winner=Standing(winner["user_id"], winner["display_name"], winner["score"]),
@@ -285,7 +294,8 @@ class Scoreboard:
 
         Keeps the open session if it is empty or saw activity within the grace
         window (the online event just arrived late). Otherwise that session is
-        stale: it is closed, and a fresh one starts.
+        stale: it is closed, and a fresh one starts. A session whose winner was
+        already revealed (locked) is always closed.
         """
         with self._db:
             now = self._clock()
@@ -298,11 +308,31 @@ class Scoreboard:
                     "SELECT 1 FROM session_scores WHERE session_id = ? LIMIT 1", (row["id"],)
                 ).fetchone()
                 fresh = now - self._last_activity(row) <= timedelta(minutes=grace_minutes)
-                if not has_scores or fresh:
+                # A locked (revealed) session is finished: a new stream must not inherit it.
+                if not row["locked_at"] and (not has_scores or fresh):
                     log.info("Online event: keeping open session %d", row["id"])
                     return StartResult(row["id"], False, None)
                 closed = self._finish(row, now)
             return StartResult(self._insert_session(now)["id"], True, closed)
+
+    @_locked
+    def lock_session(self) -> Optional[Recap]:
+        """The reveal: crown the winner, count the win and freeze tonight's scores.
+
+        The session stays open, so shots keep scoring toward lifetime totals and
+        the cannon keeps firing, but the standings no longer change. Returns
+        None if no session is open, nobody has scored yet, or it is already locked.
+        """
+        with self._db:
+            row = self._open_row()
+            if row is None or row["locked_at"]:
+                return None
+            has_scores = self._db.execute(
+                "SELECT 1 FROM session_scores WHERE session_id = ? LIMIT 1", (row["id"],)
+            ).fetchone()
+            if not has_scores:
+                return None
+            return self._finish(row, self._clock(), lock_only=True)
 
     @_locked
     def end_session(self, event_id: Optional[str] = None) -> Optional[Recap]:
@@ -337,7 +367,7 @@ class Scoreboard:
         row = self._open_row()
         if row is None:
             return {"active": False, "session_id": None, "standings": [],
-                    "king": None, "first_blood_id": None}
+                    "king": None, "first_blood_id": None, "locked": False}
         rows = self._standing_rows(row["id"])
         king = None
         if rows:
@@ -351,6 +381,7 @@ class Scoreboard:
                           for r in rows[:top_n]],
             "king": king,
             "first_blood_id": row["first_blood_id"],
+            "locked": bool(row["locked_at"]),
         }
 
     # -- scoring ------------------------------------------------------------
@@ -379,6 +410,27 @@ class Scoreboard:
             if session is None:
                 session = self._insert_session(now)
             sid = session["id"]
+
+            if session["locked_at"]:
+                self._db.execute(
+                    "INSERT INTO viewers (user_id, display_name, lifetime_shots) VALUES (?, ?, ?) "
+                    "ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name, "
+                    "lifetime_shots = lifetime_shots + excluded.lifetime_shots",
+                    (user_id, display_name, shots),
+                )
+                top = self._standing_rows(sid)[:2]
+                king = top[0]
+                mine = self._db.execute(
+                    "SELECT score FROM session_scores WHERE session_id = ? AND user_id = ?",
+                    (sid, user_id),
+                ).fetchone()
+                return Result(
+                    session_id=sid, user_id=user_id, name=display_name, shots=shots,
+                    points=0, score=mine["score"] if mine else 0, first_blood=False,
+                    king_id=king["user_id"], king_name=king["display_name"],
+                    lead=king["score"] - (top[1]["score"] if len(top) > 1 else 0),
+                    dethrone=None, closed_stale=closed_stale, locked=True,
+                )
 
             self._db.execute(
                 "INSERT INTO viewers (user_id, display_name, lifetime_shots) VALUES (?, ?, ?) "

@@ -28,7 +28,7 @@ body.dark{background:#161616}
 #alert .h{font-size:72px;font-weight:800;letter-spacing:4px}
 #alert .ln{height:2px;width:520px;margin:10px auto;background:var(--red);box-shadow:0 0 10px var(--red)}
 #alert.t-shot .ln{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
-#alert .s{font-size:26px;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
+#alert .s{white-space:pre;line-height:1.3;font-size:26px;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
 @keyframes flick{0%{opacity:0}10%{opacity:1}18%{opacity:.35}26%{opacity:1}40%{opacity:.6}52%,100%{opacity:1}}
 #flash{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 160px 40px var(--red);opacity:0}
 #flash.go{animation:fl 1s}
@@ -59,10 +59,15 @@ var CFG={firstBloodBonus:1,topN:5,boardMs:15000,remindEveryMs:600000,remindMs:15
 var FOOT='<svg width="22" height="26" viewBox="0 0 40 52" fill="none" stroke="#27e6e6" stroke-width="2.4" stroke-linecap="round"><circle cx="8" cy="17" r="3"/><circle cx="14" cy="10" r="3"/><circle cx="21" cy="8" r="3"/><circle cx="28" cy="10" r="3"/><circle cx="33" cy="17" r="3"/><path d="M6 25C4 35 8 46 18 48C28 50 34 42 33 31C32 25 30 23 22 23C14 23 8 21 6 25Z"/></svg>';
 var CROWN='<svg width="24" height="16" viewBox="0 0 32 20" fill="none" stroke="#ff2b2b" stroke-width="2.4" stroke-linejoin="round"><path d="M2 18L5 6L11 12L16 3L21 12L27 6L30 18Z"/></svg>';
 // ===== STATE (the Pi owns it; the overlay only draws what it is sent) =====
-var S={standings:[],king:null,first:null},pinned=false,boardT=null,finalT=null;
+var S={standings:[],king:null,first:null,locked:false},pinned=false,boardT=null,finalT=null;
 var TEST=/[?&]test=1/.test(location.search);
 function el(t,c,x,h){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;if(h)e.innerHTML=h;return e;}
-function applyState(st){S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null};render();}
+function applyState(st){
+  S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null,locked:!!st.locked};
+  render();
+  if(S.locked)showBoard(0);                                                        // revealed: keep the final board up
+  else if(!S.king&&!pinned){clearTimeout(boardT);document.getElementById("list").className="";}  // session over: clear
+}
 // ===== MESSAGES =====
 // {kind:"snapshot",state}  sync only.   {kind:"alert",alert:{type,h,s},state[,final:true]}  play an alert.
 function handleMessage(m){
@@ -70,7 +75,10 @@ function handleMessage(m){
   if(m.state)applyState(m.state);
   if(m.alert){
     enqueue(m.alert);
-    if(m.final){showBoard(CFG.winnerBoardMs);finalT=setTimeout(function(){applyState({});},CFG.winnerBoardMs+600);}
+    if(m.final){
+      if(S.locked)showBoard(0);   // scheduled reveal: the final board stays until the stream ends
+      else{showBoard(CFG.winnerBoardMs);finalT=setTimeout(function(){applyState({});},CFG.winnerBoardMs+600);}  // crowned at stream end
+    }
     else showBoard(CFG.boardMs);
   }
 }
@@ -96,7 +104,7 @@ function render(){
     strip.appendChild(el("span","nm red",S.king.name));
     strip.appendChild(el("span","ld","LEAD "+S.king.lead));
   }else strip.className="";
-  var hd=el("div","hd");hd.appendChild(el("span","",null,FOOT));hd.appendChild(el("span","cy","SOAK LEADERS"));list.appendChild(hd);
+  var hd=el("div","hd");hd.appendChild(el("span","",null,FOOT));hd.appendChild(el("span","cy",S.locked?"FINAL RESULTS":"SOAK LEADERS"));list.appendChild(hd);
   if(!S.standings.length)list.appendChild(el("div","empty","No shots yet tonight"));
   S.standings.slice(0,CFG.topN).forEach(function(u,i){
     var row=el("div","row");row.appendChild(el("span","rk","#"+(i+1)));
@@ -107,7 +115,7 @@ function render(){
 }
 function showBoard(ms){
   var l=document.getElementById("list");l.className="open";clearTimeout(boardT);
-  if(!pinned)boardT=setTimeout(function(){l.className="";},ms);
+  if(!pinned&&!S.locked)boardT=setTimeout(function(){l.className="";},ms);
 }
 setInterval(function(){if(S.king)showBoard(CFG.remindMs);},CFG.remindEveryMs);
 // ===== CONNECT TO THE PI =====
@@ -121,28 +129,30 @@ if(!TEST){
 }
 // ===== TEST PANEL (open /overlay?test=1; simulated in the browser, never touches the Pi) =====
 if(TEST)document.body.classList.add("testmode");
-var T;function simReset(){T={scores:{},seq:{},n:0,king:null,first:null};}simReset();
+var T;function simReset(){T={scores:{},seq:{},n:0,king:null,first:null,locked:false};}simReset();
 function simRanked(){var u=Object.keys(T.scores);u.sort(function(a,b){return T.scores[b]-T.scores[a]||T.seq[a]-T.seq[b];});return u;}
 function simState(){
   var r=simRanked(),k=T.king;
-  return{active:!!k,first_blood_id:T.first,
+  return{active:!!k,locked:T.locked,first_blood_id:T.first,
     standings:r.slice(0,CFG.topN).map(function(u){return{id:u,name:u,score:T.scores[u]};}),
     king:k?{id:k,name:k,score:T.scores[k],lead:T.scores[k]-(r[1]?T.scores[r[1]]:0)}:null};
 }
 function simShots(user,paid){
+  if(T.locked){handleMessage({kind:"alert",state:simState(),alert:paid>=5?{type:"barrage",h:"BARRAGE",s:user+" FIRED "+paid+" SHOTS"}:{type:"shot",h:user,s:"FIRED "+paid+" SHOT"+(paid>1?"S":"")}});return;}
   var pts=paid,isFirst=false,special=null;
   if(!T.first){T.first=user;isFirst=true;pts+=CFG.firstBloodBonus;}
   T.scores[user]=(T.scores[user]||0)+pts;T.seq[user]=++T.n;
   if(!T.king){T.king=user;}
   else if(user!==T.king&&T.scores[user]>T.scores[T.king]){
     var old=T.king,m=T.scores[user]-T.scores[old];T.king=user;
-    special={type:"dethrone",h:"DETHRONED",s:user+" takes the crown from "+old+" | lead "+m};
+    special={type:"dethrone",h:"DETHRONED",s:user+" takes the crown\nfrom "+old+" with "+T.scores[user]+" shots"};
   }
-  if(!special&&isFirst)special={type:"first",h:"FIRST BLOOD",s:user+" draws first | +"+CFG.firstBloodBonus+" bonus"};
-  handleMessage({kind:"alert",state:simState(),alert:special||(paid>=5?{type:"barrage",h:"BARRAGE",s:user+" | "+paid+" SHOTS"}:{type:"shot",h:user,s:"FIRED "+paid+" SHOT"+(paid>1?"S":"")})});
+  if(!special&&isFirst)special={type:"first",h:"FIRST BLOOD",s:user+" draws first\n+"+CFG.firstBloodBonus+" bonus point"+(CFG.firstBloodBonus==1?"":"s")};
+  handleMessage({kind:"alert",state:simState(),alert:special||(paid>=5?{type:"barrage",h:"BARRAGE",s:user+" FIRED "+paid+" SHOTS"}:{type:"shot",h:user,s:"FIRED "+paid+" SHOT"+(paid>1?"S":"")})});
 }
 function simWinner(){
-  if(!T.king)return;
+  if(!T.king||T.locked)return;
+  T.locked=true;
   handleMessage({kind:"alert",final:true,state:simState(),alert:{type:"winner",h:"CHAMPION",s:T.king+" wins with "+T.scores[T.king]+" shots"}});
 }
 var NAMES=["Alice","Bob","Cara","Dan","Eve"];

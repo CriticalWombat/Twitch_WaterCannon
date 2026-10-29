@@ -26,18 +26,22 @@ class AlertTests(unittest.TestCase):
 
     def test_five_shots_is_a_barrage(self):
         a = web.shot_alert(make_result(shots=5), 1)
-        self.assertEqual((a["type"], a["h"], a["s"]), ("barrage", "BARRAGE", "Alice | 5 SHOTS"))
+        self.assertEqual((a["type"], a["h"], a["s"]), ("barrage", "BARRAGE", "Alice FIRED 5 SHOTS"))
 
     def test_first_blood_beats_barrage(self):
         a = web.shot_alert(make_result(shots=5, first_blood=True), 1)
         self.assertEqual(a["type"], "first")
-        self.assertEqual(a["s"], "Alice draws first | +1 bonus")
+        self.assertEqual(a["s"], "Alice draws first\n+1 bonus point")
+
+    def test_first_blood_bonus_plural(self):
+        a = web.shot_alert(make_result(first_blood=True), 2)
+        self.assertEqual(a["s"], "Alice draws first\n+2 bonus points")
 
     def test_dethrone_beats_everything(self):
         d = scoring.Dethrone("2", "Bob", "1", "Alice", 3)
-        a = web.shot_alert(make_result(shots=5, first_blood=True, dethrone=d), 1)
+        a = web.shot_alert(make_result(shots=5, score=5, first_blood=True, dethrone=d), 1)
         self.assertEqual(a["type"], "dethrone")
-        self.assertEqual(a["s"], "Alice takes the crown from Bob | lead 3")
+        self.assertEqual(a["s"], "Alice takes the crown\nfrom Bob with 5 shots")
 
     def test_winner_alert(self):
         recap = scoring.Recap(1, "a", "b", scoring.Standing("1", "Alice", 7), 1,
@@ -184,6 +188,13 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("display:none;flex-wrap:wrap", html)         # hidden unless ?test=1
         self.assertIn("body.testmode #test{display:flex}", html)
         self.assertIn('new EventSource("/events")', html)
+
+    async def test_real_overlay_shows_line_breaks_and_final_board(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("#alert .s{white-space:pre;", html)         # the Pi sends "\n" in alert text
+        self.assertIn("FINAL RESULTS", html)                       # a locked board is labelled FINAL
+        self.assertNotIn(" | lead ", html)                         # old wording gone from the preview too
 
 
 if __name__ == "__main__":

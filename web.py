@@ -43,12 +43,13 @@ def shot_alert(result: scoring.Result, first_blood_bonus: int) -> dict:
     if result.dethrone:
         d = result.dethrone
         return {"type": "dethrone", "h": "DETHRONED",
-                "s": f"{d.new_name} takes the crown from {d.old_name} | lead {d.margin}"}
+                "s": f"{d.new_name} takes the crown\nfrom {d.old_name} with {result.score} shots"}
     if result.first_blood:
+        pts = "point" if first_blood_bonus == 1 else "points"
         return {"type": "first", "h": "FIRST BLOOD",
-                "s": f"{result.name} draws first | +{first_blood_bonus} bonus"}
+                "s": f"{result.name} draws first\n+{first_blood_bonus} bonus {pts}"}
     if result.shots >= BARRAGE_MIN_SHOTS:
-        return {"type": "barrage", "h": "BARRAGE", "s": f"{result.name} | {result.shots} SHOTS"}
+        return {"type": "barrage", "h": "BARRAGE", "s": f"{result.name} FIRED {result.shots} SHOTS"}
     return {"type": "shot", "h": result.name,
             "s": f"FIRED {result.shots} SHOT{'S' if result.shots != 1 else ''}"}
 
