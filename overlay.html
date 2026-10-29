@@ -8,9 +8,15 @@ html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent
 body.dark{background:#161616}
 .red{color:var(--mint);-webkit-text-stroke:1px var(--red);text-shadow:0 0 6px var(--red),0 0 18px var(--red),0 0 38px #a00}
 .cy{color:var(--mint);text-shadow:0 0 6px var(--cyan),0 0 18px var(--cyan)}
-#panel{position:absolute;top:32px;right:32px;width:380px}
-#strip{display:none;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border:2px solid var(--cyan);border-radius:4px;box-shadow:0 0 14px #27e6e655,inset 0 0 12px #27e6e622}
+#panel{position:absolute;top:32px;right:32px;width:380px;transform:scale(1.6);transform-origin:top right}
+#strip{display:none;flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;background:var(--panel);border:2px solid var(--cyan);border-radius:4px;box-shadow:0 0 14px #27e6e655,inset 0 0 12px #27e6e622}
 #strip.on{display:flex}
+#strip .r1{display:flex;align-items:center;gap:10px}
+#strip .nm.dim{opacity:.6}
+#strip .tm{text-align:center;font-size:13px;font-weight:600;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 8px var(--cyan);border-top:1px solid #27e6e633;padding-top:6px;white-space:nowrap}
+#strip .tm.soon{color:var(--mint);text-shadow:0 0 6px var(--red),0 0 14px var(--red);animation:pulse 1s infinite}
+#strip .tm.done{opacity:.8}
+@keyframes pulse{50%{opacity:.55}}
 #strip .nm{font-weight:800;font-size:20px;letter-spacing:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #strip .ld{margin-left:auto;color:var(--cyan);font-size:13px;white-space:nowrap}
 #list{margin-top:8px;background:var(--panel);border:2px solid var(--red);border-radius:4px;box-shadow:0 0 16px #ff2b2b55;opacity:0;visibility:hidden;transform:translateY(-10px);transition:opacity .4s,transform .4s,visibility .4s}
@@ -28,8 +34,9 @@ body.dark{background:#161616}
 #alert .h{font-size:72px;font-weight:800;letter-spacing:4px}
 #alert .ln{height:2px;width:520px;margin:10px auto;background:var(--red);box-shadow:0 0 10px var(--red)}
 #alert.t-shot .ln{background:var(--cyan);box-shadow:0 0 10px var(--cyan)}
-#alert .s{white-space:pre;line-height:1.3;font-size:26px;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
+#alert .s{white-space:pre-line;font-size:42px;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 10px var(--cyan)}
 @keyframes flick{0%{opacity:0}10%{opacity:1}18%{opacity:.35}26%{opacity:1}40%{opacity:.6}52%,100%{opacity:1}}
+body.busy #list.open{opacity:0;visibility:hidden}
 #flash{position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 160px 40px var(--red);opacity:0}
 #flash.go{animation:fl 1s}
 @keyframes fl{0%{opacity:0}20%{opacity:.65}100%{opacity:0}}
@@ -49,21 +56,24 @@ body.testmode #test{display:flex}
   <button data-t="s1">+1 random</button><button data-t="s5">+5 random</button>
   <button data-t="a5">Alice +5</button><button data-t="b5">Bob +5</button>
   <button data-t="board">Show board</button><button data-t="pin">Pin</button>
-  <button data-t="win">Winner</button><button data-t="reset">Reset</button><button data-t="bg">Preview BG</button>
+  <button data-t="win">Winner</button><button data-t="rv">Reveal in 1 min</button><button data-t="reset">Reset</button><button data-t="bg">Preview BG</button>
 </div>
 <script>
 // ===== SETTINGS =====
-var CFG={firstBloodBonus:1,topN:5,boardMs:15000,remindEveryMs:600000,remindMs:15000,winnerBoardMs:12000,
+var CFG={volume:0.6,sounds:{shot:"sounds/shot.mp3",barrage:"sounds/barrage.mp3",first:"sounds/firstblood.mp3",dethrone:"sounds/dethrone.mp3",winner:"sounds/winner.mp3"},
+  schedule:{endTime:"21:30",revealMinutesBefore:10},   // only drives the ?test=1 preview; the Pi owns the real schedule
+  firstBloodBonus:1,topN:5,boardMs:15000,remindEveryMs:600000,remindMs:15000,winnerBoardMs:12000,
   alertMs:{shot:3000,barrage:4200,first:4200,dethrone:4800,winner:9000},
   prio:{shot:1,barrage:2,first:3,dethrone:4,winner:5}};
-var FOOT='<svg width="22" height="26" viewBox="0 0 40 52" fill="none" stroke="#27e6e6" stroke-width="2.4" stroke-linecap="round"><circle cx="8" cy="17" r="3"/><circle cx="14" cy="10" r="3"/><circle cx="21" cy="8" r="3"/><circle cx="28" cy="10" r="3"/><circle cx="33" cy="17" r="3"/><path d="M6 25C4 35 8 46 18 48C28 50 34 42 33 31C32 25 30 23 22 23C14 23 8 21 6 25Z"/></svg>';
 var CROWN='<svg width="24" height="16" viewBox="0 0 32 20" fill="none" stroke="#ff2b2b" stroke-width="2.4" stroke-linejoin="round"><path d="M2 18L5 6L11 12L16 3L21 12L27 6L30 18Z"/></svg>';
 // ===== STATE (the Pi owns it; the overlay only draws what it is sent) =====
-var S={standings:[],king:null,first:null,locked:false},pinned=false,boardT=null,finalT=null;
+var S={standings:[],king:null,first:null,locked:false,revealAt:0},pinned=false,boardT=null,finalT=null;
 var TEST=/[?&]test=1/.test(location.search);
 function el(t,c,x,h){var e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;if(h)e.innerHTML=h;return e;}
 function applyState(st){
-  S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null,locked:!!st.locked};
+  var ra=("reveal_at" in st)?(st.reveal_at||0):S.revealAt;       // an empty state keeps the schedule
+  if(st.server_now)clockOffset=st.server_now-Date.now();          // use the Pi's clock, not this PC's
+  S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null,locked:!!st.locked,revealAt:ra};
   render();
   if(S.locked)showBoard(0);                                                        // revealed: keep the final board up
   else if(!S.king&&!pinned){clearTimeout(boardT);document.getElementById("list").className="";}  // session over: clear
@@ -82,15 +92,17 @@ function handleMessage(m){
     else showBoard(CFG.boardMs);
   }
 }
+// ===== SOUNDS (files live in the "sounds" folder; the Pi serves them at /sounds/) =====
+function playSound(type){var f=CFG.sounds[type];if(!f)return;try{var au=new Audio(f);au.volume=CFG.volume;var p=au.play();if(p&&p.catch)p.catch(function(){});}catch(e){}}
 // ===== ALERT QUEUE =====
 var Q=[],busy=false,alertEl=document.getElementById("alert");
 function enqueue(a){a.p=CFG.prio[a.type];Q.push(a);Q.sort(function(x,y){return y.p-x.p;});if(!busy)next();}
 function next(){
-  var a=Q.shift();if(!a){busy=false;return;}busy=true;
+  var a=Q.shift();if(!a){busy=false;document.body.classList.remove("busy");if(document.getElementById("list").className==="open")showBoard(lastMs);return;}busy=true;document.body.classList.add("busy");
   alertEl.className="";void alertEl.offsetWidth;
   var h=alertEl.querySelector(".h");h.textContent=a.h;h.className="h "+(a.type==="shot"?"cy":"red");
   alertEl.querySelector(".s").textContent=a.s;
-  alertEl.className="on t-"+a.type;
+  alertEl.className="on t-"+a.type;playSound(a.type);
   if(a.type!=="shot"){var f=document.getElementById("flash");f.className="";void f.offsetWidth;f.className="go";}
   setTimeout(function(){alertEl.className="";setTimeout(next,350);},CFG.alertMs[a.type]);
 }
@@ -98,13 +110,16 @@ function next(){
 function render(){
   var strip=document.getElementById("strip"),list=document.getElementById("list");
   strip.innerHTML="";list.innerHTML="";
-  if(S.king){
+  if(S.king||S.revealAt){                                         // the leader card is always up while a reveal is scheduled
     strip.className="on";
-    strip.appendChild(el("span","",null,CROWN));
-    strip.appendChild(el("span","nm red",S.king.name));
-    strip.appendChild(el("span","ld","LEAD "+S.king.lead));
+    var r1=el("div","r1");
+    r1.appendChild(el("span","",null,CROWN));
+    r1.appendChild(S.king?el("span","nm red",S.king.name):el("span","nm dim","NO LEADER YET"));
+    r1.appendChild(el("span","ld",S.king?(S.locked?"CHAMPION":"LEAD "+S.king.lead):""));
+    strip.appendChild(r1);strip.appendChild(el("div","tm"));
+    tick();
   }else strip.className="";
-  var hd=el("div","hd");hd.appendChild(el("span","",null,FOOT));hd.appendChild(el("span","cy",S.locked?"FINAL RESULTS":"SOAK LEADERS"));list.appendChild(hd);
+  var hd=el("div","hd");hd.appendChild(el("span","cy",S.locked?"FINAL STANDINGS":"MASTER BLASTERS"));list.appendChild(hd);
   if(!S.standings.length)list.appendChild(el("div","empty","No shots yet tonight"));
   S.standings.slice(0,CFG.topN).forEach(function(u,i){
     var row=el("div","row");row.appendChild(el("span","rk","#"+(i+1)));
@@ -113,11 +128,35 @@ function render(){
     row.appendChild(nm);row.appendChild(el("span","sc",u.score));list.appendChild(row);
   });
 }
+var lastMs=15000;
 function showBoard(ms){
+  lastMs=ms;
   var l=document.getElementById("list");l.className="open";clearTimeout(boardT);
   if(!pinned&&!S.locked)boardT=setTimeout(function(){l.className="";},ms);
 }
 setInterval(function(){if(S.king)showBoard(CFG.remindMs);},CFG.remindEveryMs);
+// ===== COUNTDOWN to the winner reveal (the Pi sends reveal_at plus its own clock reading) =====
+var clockOffset=0,lastRefresh=0;
+function nowMs(){return Date.now()+clockOffset;}
+function pad(n){return n<10?"0"+n:""+n;}
+function fmtLeft(ms){var s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+":"+pad(m):m)+":"+pad(s%60);}
+function tick(){
+  var tm=document.querySelector("#strip .tm");if(!tm)return;
+  if(S.locked){tm.textContent="RESULTS LOCKED";tm.className="tm done";return;}
+  if(!S.revealAt){tm.textContent="";return;}
+  var d=S.revealAt-nowMs();
+  if(d>0){tm.textContent="WINNER IN "+fmtLeft(d);tm.className="tm"+(d<=60000?" soon":"");}
+  else if(d>-60000){tm.textContent="REVEALING...";tm.className="tm soon";}
+  else{tm.textContent="WINNER IN --:--";tm.className="tm";refreshReveal();}   // nothing happened: ask the Pi for the next one
+}
+function refreshReveal(){
+  if(TEST||Date.now()-lastRefresh<30000)return;lastRefresh=Date.now();
+  fetch("/state",{cache:"no-store"}).then(function(r){return r.json();}).then(function(st){
+    if(st.server_now)clockOffset=st.server_now-Date.now();
+    if(st.reveal_at)S.revealAt=st.reveal_at;
+  }).catch(function(){});
+}
+setInterval(tick,1000);
 // ===== CONNECT TO THE PI =====
 if(!TEST){
   var firstSnapshot=true,es=new EventSource("/events");   // reconnects on its own
@@ -129,11 +168,12 @@ if(!TEST){
 }
 // ===== TEST PANEL (open /overlay?test=1; simulated in the browser, never touches the Pi) =====
 if(TEST)document.body.classList.add("testmode");
-var T;function simReset(){T={scores:{},seq:{},n:0,king:null,first:null,locked:false};}simReset();
+var T;function simReveal(){var p=CFG.schedule.endTime.split(":"),d=new Date();d.setHours(+p[0],+p[1],0,0);var r=d.getTime()-CFG.schedule.revealMinutesBefore*60000;if(r+60000<=Date.now())r+=86400000;return r;}
+function simReset(){T={scores:{},seq:{},n:0,king:null,first:null,locked:false,revealAt:simReveal()};}simReset();
 function simRanked(){var u=Object.keys(T.scores);u.sort(function(a,b){return T.scores[b]-T.scores[a]||T.seq[a]-T.seq[b];});return u;}
 function simState(){
   var r=simRanked(),k=T.king;
-  return{active:!!k,locked:T.locked,first_blood_id:T.first,
+  return{active:!!k,locked:T.locked,first_blood_id:T.first,reveal_at:T.revealAt,server_now:Date.now(),
     standings:r.slice(0,CFG.topN).map(function(u){return{id:u,name:u,score:T.scores[u]};}),
     king:k?{id:k,name:k,score:T.scores[k],lead:T.scores[k]-(r[1]?T.scores[r[1]]:0)}:null};
 }
@@ -157,6 +197,11 @@ function simWinner(){
 }
 var NAMES=["Alice","Bob","Cara","Dan","Eve"];
 function rnd(){return NAMES[Math.floor(Math.random()*NAMES.length)];}
+setInterval(function(){                        // the real Pi does this on a schedule
+  if(!TEST||!T.revealAt)return;var n=Date.now();
+  if(n>=T.revealAt&&n<T.revealAt+60000){if(!T.locked&&T.king)simWinner();}
+  else if(n>=T.revealAt+60000){T.revealAt=simReveal();applyState(simState());}
+},1000);
 document.getElementById("test").addEventListener("click",function(e){
   var b=e.target.closest("button");if(!b)return;var t=b.dataset.t;
   if(t==="s1")simShots(rnd(),1);
@@ -166,6 +211,7 @@ document.getElementById("test").addEventListener("click",function(e){
   if(t==="board"){render();showBoard(CFG.boardMs);}
   if(t==="pin"){pinned=!pinned;b.textContent=pinned?"Unpin":"Pin";if(pinned){render();showBoard(0);}else showBoard(CFG.boardMs);}
   if(t==="win")simWinner();
+  if(t==="rv"){T.revealAt=Date.now()+60000;applyState(simState());}
   if(t==="reset"){simReset();handleMessage({kind:"snapshot",state:simState()});}
   if(t==="bg")document.body.classList.toggle("dark");
 });

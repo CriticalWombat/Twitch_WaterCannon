@@ -4,6 +4,7 @@ web.py
 Tiny read-only web server for the OBS overlay, built on the standard library.
 
   GET /overlay   the overlay page (add ?test=1 for the hidden test panel)
+  GET /sounds/X  an alert sound from the sounds folder (plain file names only)
   GET /events    Server-Sent Events: a snapshot on connect, then live messages
   GET /state     the current leaderboard as JSON (handy for debugging)
   GET /healthz   "ok"
@@ -20,6 +21,7 @@ Message shape (JSON, one per SSE event):
 import asyncio
 import json
 import logging
+import re
 import urllib.parse
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -28,6 +30,9 @@ import scoring
 
 log = logging.getLogger("water_cannon.web")
 
+SOUND_NAME = re.compile(r"^[A-Za-z0-9_-]{1,64}\.(mp3|ogg|wav)$")
+SOUND_TYPES = {"mp3": "audio/mpeg", "ogg": "audio/ogg", "wav": "audio/wav"}
+MAX_SOUND_BYTES = 5 * 1024 * 1024
 BARRAGE_MIN_SHOTS = 5
 MAX_SSE_CLIENTS = 10
 PING_EVERY_SEC = 15
@@ -110,12 +115,13 @@ _REASONS = {200: "OK", 404: "Not Found", 405: "Method Not Allowed",
             400: "Bad Request", 503: "Service Unavailable"}
 
 
-def _response(status: int, content_type: str, body: bytes) -> bytes:
+def _response(status: int, content_type: str, body: bytes,
+              cache: str = "no-store") -> bytes:
     head = (
         f"HTTP/1.1 {status} {_REASONS[status]}\r\n"
         f"Content-Type: {content_type}\r\n"
         f"Content-Length: {len(body)}\r\n"
-        "Cache-Control: no-store\r\n"
+        f"Cache-Control: {cache}\r\n"
         "X-Content-Type-Options: nosniff\r\n"
         "Connection: close\r\n\r\n"
     )
@@ -185,8 +191,21 @@ async def _stream_events(reader, writer, hub: Hub, snapshot: Callable[[], dict])
                  "" if hub.client_count == 1 else "s")
 
 
+def _sound_response(sounds_dir: Optional[str], name: str) -> bytes:
+    """A sound file, or a 404. Only plain names that match SOUND_NAME are ever opened."""
+    if sounds_dir and SOUND_NAME.match(name):
+        path = Path(sounds_dir) / name
+        try:
+            if path.is_file() and path.stat().st_size <= MAX_SOUND_BYTES:
+                return _response(200, SOUND_TYPES[name.rsplit(".", 1)[1]], path.read_bytes(),
+                                 cache="public, max-age=3600")
+        except OSError:
+            pass
+    return _response(404, "text/plain", b"not found\n")
+
+
 async def start(host: str, port: int, hub: Hub, snapshot: Callable[[], dict],
-                overlay_path: str) -> asyncio.AbstractServer:
+                overlay_path: str, sounds_dir: Optional[str] = None) -> asyncio.AbstractServer:
     """Start serving. Raises OSError if the port can't be bound."""
     overlay_html = Path(overlay_path).read_bytes()
 
@@ -208,6 +227,9 @@ async def start(host: str, port: int, hub: Hub, snapshot: Callable[[], dict],
                     writer.write(_response(200, "application/json", body))
                 elif path == "/healthz":
                     writer.write(_response(200, "text/plain", b"ok\n"))
+                elif path.startswith("/sounds/"):
+                    writer.write(await asyncio.to_thread(
+                        _sound_response, sounds_dir, path[len("/sounds/"):]))
                 else:
                     writer.write(_response(404, "text/plain", b"not found\n"))
             await writer.drain()

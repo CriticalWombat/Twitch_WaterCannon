@@ -86,7 +86,16 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
         self.overlay = os.path.join(self._dir.name, "overlay.html")
         with open(self.overlay, "w") as f:
             f.write("<html>overlay</html>")
-        self.server = await web.start("127.0.0.1", 0, self.hub, lambda: self.state, self.overlay)
+        self.sounds = os.path.join(self._dir.name, "sounds")
+        os.makedirs(os.path.join(self.sounds, "sub"))
+        for name, data in {"shot.mp3": b"ID3-shot", "dethrone.mp3": b"ID3-dethrone",
+                           "notes.txt": b"not audio"}.items():
+            with open(os.path.join(self.sounds, name), "wb") as f:
+                f.write(data)
+        with open(os.path.join(self.sounds, "sub", "inner.mp3"), "wb") as f:
+            f.write(b"inner")
+        self.server = await web.start("127.0.0.1", 0, self.hub, lambda: self.state, self.overlay,
+                                      self.sounds)
         self.port = self.server.sockets[0].getsockname()[1]
 
     async def asyncTearDown(self):
@@ -192,9 +201,65 @@ class ServerTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_overlay_shows_line_breaks_and_final_board(self):
         with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
             html = f.read()
-        self.assertIn("#alert .s{white-space:pre;", html)         # the Pi sends "\n" in alert text
-        self.assertIn("FINAL RESULTS", html)                       # a locked board is labelled FINAL
+        self.assertIn("#alert .s{white-space:pre-line;font-size:42px;", html)   # the Pi sends "\n" in alert text
+        self.assertIn("FINAL STANDINGS", html)                     # a locked board is labelled FINAL
         self.assertNotIn(" | lead ", html)                         # old wording gone from the preview too
+
+    async def test_real_overlay_has_the_new_visual_design(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        self.assertIn("transform:scale(1.6);transform-origin:top right", html)   # bigger leader panel
+        self.assertIn("body.busy #list.open{opacity:0;visibility:hidden}", html)  # board hides during alerts
+        self.assertIn("MASTER BLASTERS", html)
+        self.assertNotIn("SOAK LEADERS", html)
+        self.assertNotIn("FINAL RESULTS", html)
+        self.assertNotIn("var FOOT", html)                         # header footprint icon removed
+        self.assertIn('S.locked?"CHAMPION":"LEAD "', html)         # leader strip says CHAMPION once locked
+        self.assertIn("Reveal in 1 min", html)
+
+    async def test_real_overlay_plays_a_sound_per_alert_type(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        for key, name in {"shot": "shot", "barrage": "barrage", "first": "firstblood",
+                          "dethrone": "dethrone", "winner": "winner"}.items():
+            self.assertIn(f'{key}:"sounds/{name}.mp3"', html)
+        self.assertIn("playSound(a.type)", html)
+        self.assertIn("volume:0.6", html)
+
+    async def test_real_overlay_shows_the_countdown_on_the_leader_card(self):
+        with open(os.path.join(REPO, "overlay.html"), encoding="utf-8") as f:
+            html = f.read()
+        for needle in ('"WINNER IN "', "REVEALING...", "RESULTS LOCKED", "reveal_at", "server_now",
+                       "NO LEADER YET", 'el("div","tm")', "clockOffset"):
+            self.assertIn(needle, html)
+        self.assertIn("S.king||S.revealAt", html)                  # the card is up even before anyone scores
+
+    async def test_sound_is_served_with_audio_headers(self):
+        resp = await self.get("/sounds/shot.mp3")
+        self.assertTrue(resp.startswith(b"HTTP/1.1 200"))
+        self.assertIn(b"Content-Type: audio/mpeg", resp)
+        self.assertIn(b"max-age=3600", resp)
+        self.assertTrue(resp.endswith(b"ID3-shot"))
+
+    async def test_sound_paths_cannot_escape_or_serve_other_files(self):
+        for path in ("/sounds/missing.mp3", "/sounds/notes.txt", "/sounds/", "/sounds/sub",
+                     "/sounds/sub/inner.mp3", "/sounds/../overlay.html", "/sounds/..%2foverlay.html",
+                     "/sounds/%2e%2e%2foverlay.html", "/sounds/shot.mp3%00.txt", "/sounds/.mp3"):
+            with self.subTest(path=path):
+                self.assertTrue((await self.get(path)).startswith(b"HTTP/1.1 404"), path)
+
+    async def test_sounds_are_404_when_no_folder_is_configured(self):
+        server = await web.start("127.0.0.1", 0, self.hub, lambda: self.state, self.overlay)
+        try:
+            port = server.sockets[0].getsockname()[1]
+            reader, writer = await asyncio.open_connection("127.0.0.1", port)
+            writer.write(b"GET /sounds/shot.mp3 HTTP/1.1\r\nHost: x\r\n\r\n")
+            await writer.drain()
+            self.assertTrue((await asyncio.wait_for(reader.read(), 5)).startswith(b"HTTP/1.1 404"))
+            writer.close()
+        finally:
+            server.close()
+            await server.wait_closed()
 
 
 if __name__ == "__main__":
