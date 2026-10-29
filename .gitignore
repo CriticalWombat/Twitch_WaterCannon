@@ -219,3 +219,6 @@ __marimo__/
 
 # Soak leaderboard database (runtime data)
 data/
+
+# Alert sound files (your own audio; check licensing before committing)
+sounds/

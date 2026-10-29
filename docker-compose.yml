@@ -26,6 +26,9 @@ services:
     # Scores live in /data/soak.db so rebuilds and restarts keep them.
     volumes:
       - ./data:/data
+      # Alert sounds for the overlay (shot, barrage, firstblood, dethrone, winner .mp3).
+      # Read-only; swap files any time, no rebuild needed.
+      - ./sounds:/app/sounds:ro
 
     # ── Logging ─────────────────────────────────────────────────────────────
     logging:

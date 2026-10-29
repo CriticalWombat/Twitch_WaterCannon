@@ -140,6 +140,20 @@ Append `?test=1` to preview the overlay with a local test panel (nothing touches
 The web server is read-only and has no endpoint that can reach the cannon. Keep port 5000
 on your LAN; don't forward it from your router. Set `WEB_ENABLED=0` to turn it off.
 
+### Overlay sounds and the countdown
+
+The leader card in the top-right is always on screen. It shows the current leader and a
+**WINNER IN m:ss** countdown to the reveal; the timer pulses in the last minute, says
+REVEALING... at the moment, and turns into CHAMPION / RESULTS LOCKED once the winner is
+declared. The countdown uses the Pi's clock, so it is right whatever the OBS PC's timezone.
+While an alert plays the leaderboard list hides, then returns.
+
+Each alert plays a sound from the `sounds/` folder next to `overlay.html`:
+`shot.mp3`, `barrage.mp3`, `firstblood.mp3`, `dethrone.mp3`, `winner.mp3`. Compose mounts
+`./sounds` read-only into the container, so you can swap a file without rebuilding. The
+folder is gitignored: use audio you have the rights to. In OBS, tick **Control audio via
+OBS** on the browser source so you can set its volume in the mixer.
+
 ### Winner reveal
 
 On stream night the winner is revealed a few minutes **before** the stream ends so nobody can

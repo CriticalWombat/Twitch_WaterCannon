@@ -89,6 +89,7 @@ WEB_HOST              = os.environ.get("WEB_HOST", "0.0.0.0")
 WEB_PORT              = int(os.environ.get("WEB_PORT", "5000"))
 OVERLAY_TOP_N         = int(os.environ.get("OVERLAY_TOP_N", "5"))
 OVERLAY_PATH          = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay.html")
+SOUNDS_DIR            = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sounds")  # alert sounds, mounted by compose
 
 EVENTSUB_WS_URL       = "wss://eventsub.wss.twitch.tv/ws"
 TWITCH_EVENTSUB_URL   = "https://api.twitch.tv/helix/eventsub/subscriptions"
@@ -130,12 +131,29 @@ except Exception:
 hub = web.Hub()   # fans overlay messages out to every connected OBS browser source
 
 
+def reveal_info() -> dict:
+    """When the next winner reveal is, for the overlay's countdown. Sent as epoch
+    milliseconds together with this machine's clock, so the overlay never depends on the
+    OBS computer's clock or timezone. Empty if the reveal schedule is off or invalid."""
+    if not REVEAL_ENABLED:
+        return {}
+    try:
+        now = datetime.now(ZoneInfo(STREAM_TZ))
+        start = reveal.next_start(now, reveal.parse_hhmm(STREAM_END_TIME), REVEAL_MINUTES_BEFORE)
+        return {"reveal_at": int(start.timestamp() * 1000), "server_now": int(now.timestamp() * 1000)}
+    except Exception:
+        return {}
+
+
 def current_state() -> dict:
     """The leaderboard as the overlay sees it (empty if scoring is unavailable)."""
     if scoreboard is None:
-        return {"active": False, "session_id": None, "standings": [],
-                "king": None, "first_blood_id": None}
-    return scoreboard.snapshot(OVERLAY_TOP_N)
+        state = {"active": False, "session_id": None, "standings": [],
+                 "king": None, "first_blood_id": None}
+    else:
+        state = scoreboard.snapshot(OVERLAY_TOP_N)
+    state.update(reveal_info())
+    return state
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +525,7 @@ async def run():
     # Overlay server. If it can't start (port in use, missing file) the cannon is unaffected.
     if WEB_ENABLED:
         try:
-            await web.start(WEB_HOST, WEB_PORT, hub, current_state, OVERLAY_PATH)
+            await web.start(WEB_HOST, WEB_PORT, hub, current_state, OVERLAY_PATH, SOUNDS_DIR)
         except Exception:
             log.exception("Overlay server could not start – the cannon is unaffected")
 
