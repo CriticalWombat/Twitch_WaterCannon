@@ -2,20 +2,19 @@
 <html lang="en"><head><meta charset="utf-8"><title>Archfoot Soak Overlay</title>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;800&display=swap" rel="stylesheet">
 <style>
-:root{--red:#ff2b2b;--mint:#d9fff5;--cyan:#27e6e6;--panel:#0e0e0ee8;--alert-top:150px}
+:root{--gold:#ffd23f;--red:#ff2b2b;--mint:#d9fff5;--cyan:#27e6e6;--panel:#0e0e0ee8;--alert-top:150px}
 *{box-sizing:border-box}
 html,body{margin:0;width:100%;height:100%;overflow:hidden;background:transparent;font-family:Orbitron,Bahnschrift,"Segoe UI",Arial,sans-serif;color:var(--mint)}
 body.dark{background:#161616}
 .red{color:var(--mint);-webkit-text-stroke:1px var(--red);text-shadow:0 0 6px var(--red),0 0 18px var(--red),0 0 38px #a00}
 .cy{color:var(--mint);text-shadow:0 0 6px var(--cyan),0 0 18px var(--cyan)}
 #panel{position:absolute;top:32px;right:32px;width:380px;transform:scale(1.6);transform-origin:top right}
-#strip{display:none;flex-direction:column;align-items:stretch;gap:6px;padding:10px 14px;background:var(--panel);border:2px solid var(--cyan);border-radius:4px;box-shadow:0 0 14px #27e6e655,inset 0 0 12px #27e6e622}
+#strip{display:none;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);border:2px solid var(--cyan);border-radius:4px;box-shadow:0 0 14px #27e6e655,inset 0 0 12px #27e6e622}
 #strip.on{display:flex}
-#strip .r1{display:flex;align-items:center;gap:10px}
-#strip .nm.dim{opacity:.6}
-#strip .tm{text-align:center;font-size:13px;font-weight:600;letter-spacing:2px;color:var(--cyan);text-shadow:0 0 8px var(--cyan);border-top:1px solid #27e6e633;padding-top:6px;white-space:nowrap}
-#strip .tm.soon{color:var(--mint);text-shadow:0 0 6px var(--red),0 0 14px var(--red);animation:pulse 1s infinite}
-#strip .tm.done{opacity:.8}
+svg{filter:drop-shadow(0 0 4px #ffd23f99)}
+#strip .tm{font-size:15px;font-weight:800;letter-spacing:2px;color:var(--mint);text-shadow:0 0 8px var(--cyan);padding-left:10px;border-left:1px solid #27e6e666;white-space:nowrap}
+#strip .tm.off{display:none}
+#strip .tm.soon{text-shadow:0 0 6px var(--red),0 0 14px var(--red);animation:pulse 1s infinite}
 @keyframes pulse{50%{opacity:.55}}
 #strip .nm{font-weight:800;font-size:20px;letter-spacing:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #strip .ld{margin-left:auto;color:var(--cyan);font-size:13px;white-space:nowrap}
@@ -27,7 +26,7 @@ body.dark{background:#161616}
 .row .rk{color:var(--cyan);font-weight:800}
 .row .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px}
 .row .sc{font-weight:800;color:var(--mint);text-shadow:0 0 8px var(--red)}
-.fb{font-size:10px;color:var(--red);border:1px solid var(--red);padding:1px 4px;border-radius:3px}
+.fb{font-size:10px;color:var(--cyan);border:1px solid var(--cyan);padding:1px 4px;border-radius:3px}
 .empty{padding:14px;color:#9fd;opacity:.6;font-size:14px}
 #alert{position:absolute;top:var(--alert-top);left:50%;transform:translateX(-50%) scale(.85);text-align:center;white-space:nowrap;opacity:0;transition:opacity .3s,transform .3s}
 #alert.on{opacity:1;transform:translateX(-50%) scale(1);animation:flick .8s}
@@ -61,11 +60,12 @@ body.testmode #test{display:flex}
 <script>
 // ===== SETTINGS =====
 var CFG={volume:0.6,sounds:{shot:"sounds/shot.mp3",barrage:"sounds/barrage.mp3",first:"sounds/firstblood.mp3",dethrone:"sounds/dethrone.mp3",winner:"sounds/winner.mp3"},
+  countdownShowMs:600000,                              // show the timer only in the last 10 min before the lock
   schedule:{endTime:"21:30",revealMinutesBefore:10},   // only drives the ?test=1 preview; the Pi owns the real schedule
   firstBloodBonus:1,topN:5,boardMs:15000,remindEveryMs:600000,remindMs:15000,winnerBoardMs:12000,
   alertMs:{shot:3000,barrage:4200,first:4200,dethrone:4800,winner:9000},
   prio:{shot:1,barrage:2,first:3,dethrone:4,winner:5}};
-var CROWN='<svg width="24" height="16" viewBox="0 0 32 20" fill="none" stroke="#ff2b2b" stroke-width="2.4" stroke-linejoin="round"><path d="M2 18L5 6L11 12L16 3L21 12L27 6L30 18Z"/></svg>';
+var CROWN='<svg width="24" height="16" viewBox="0 0 32 20" fill="none" stroke="#ffd23f" stroke-width="2.4" stroke-linejoin="round"><path d="M2 18L5 6L11 12L16 3L21 12L27 6L30 18Z"/></svg>';
 // ===== STATE (the Pi owns it; the overlay only draws what it is sent) =====
 var S={standings:[],king:null,first:null,locked:false,revealAt:0},pinned=false,boardT=null,finalT=null;
 var TEST=/[?&]test=1/.test(location.search);
@@ -75,8 +75,7 @@ function applyState(st){
   if(st.server_now)clockOffset=st.server_now-Date.now();          // use the Pi's clock, not this PC's
   S={standings:st.standings||[],king:st.king||null,first:st.first_blood_id||null,locked:!!st.locked,revealAt:ra};
   render();
-  if(S.locked)showBoard(0);                                                        // revealed: keep the final board up
-  else if(!S.king&&!pinned){clearTimeout(boardT);document.getElementById("list").className="";}  // session over: clear
+  if(!S.king&&!pinned){clearTimeout(boardT);document.getElementById("list").className="";}  // session over: clear
 }
 // ===== MESSAGES =====
 // {kind:"snapshot",state}  sync only.   {kind:"alert",alert:{type,h,s},state[,final:true]}  play an alert.
@@ -86,10 +85,10 @@ function handleMessage(m){
   if(m.alert){
     enqueue(m.alert);
     if(m.final){
-      if(S.locked)showBoard(0);   // scheduled reveal: the final board stays until the stream ends
-      else{showBoard(CFG.winnerBoardMs);finalT=setTimeout(function(){applyState({});},CFG.winnerBoardMs+600);}  // crowned at stream end
+      showBoard(CFG.winnerBoardMs);                    // final standings for a few seconds, then back to the small leader card
+      if(!S.locked)finalT=setTimeout(function(){applyState({});},CFG.winnerBoardMs+600);   // crowned at stream end: session over, clear
     }
-    else showBoard(CFG.boardMs);
+    else if(!S.locked)showBoard(CFG.boardMs);          // after the lock the stats are frozen: late shots only get their alert
   }
 }
 // ===== SOUNDS (files live in the "sounds" folder; the Pi serves them at /sounds/) =====
@@ -110,13 +109,12 @@ function next(){
 function render(){
   var strip=document.getElementById("strip"),list=document.getElementById("list");
   strip.innerHTML="";list.innerHTML="";
-  if(S.king||S.revealAt){                                         // the leader card is always up while a reveal is scheduled
+  if(S.king){                                                     // one line: crown, leader, lead (or CHAMPION), timer
     strip.className="on";
-    var r1=el("div","r1");
-    r1.appendChild(el("span","",null,CROWN));
-    r1.appendChild(S.king?el("span","nm red",S.king.name):el("span","nm dim","NO LEADER YET"));
-    r1.appendChild(el("span","ld",S.king?(S.locked?"CHAMPION":"LEAD "+S.king.lead):""));
-    strip.appendChild(r1);strip.appendChild(el("div","tm"));
+    strip.appendChild(el("span","",null,CROWN));
+    strip.appendChild(el("span","nm red",S.king.name));
+    strip.appendChild(el("span","ld",S.locked?"CHAMPION":"LEAD "+S.king.lead));
+    strip.appendChild(el("span","tm off"));
     tick();
   }else strip.className="";
   var hd=el("div","hd");hd.appendChild(el("span","cy",S.locked?"FINAL STANDINGS":"MASTER BLASTERS"));list.appendChild(hd);
@@ -132,22 +130,23 @@ var lastMs=15000;
 function showBoard(ms){
   lastMs=ms;
   var l=document.getElementById("list");l.className="open";clearTimeout(boardT);
-  if(!pinned&&!S.locked)boardT=setTimeout(function(){l.className="";},ms);
+  if(!pinned)boardT=setTimeout(function(){l.className="";},ms);
 }
 setInterval(function(){if(S.king)showBoard(CFG.remindMs);},CFG.remindEveryMs);
-// ===== COUNTDOWN to the winner reveal (the Pi sends reveal_at plus its own clock reading) =====
+// ===== COUNTDOWN to the lock (the Pi sends reveal_at plus its own clock reading) =====
 var clockOffset=0,lastRefresh=0;
 function nowMs(){return Date.now()+clockOffset;}
 function pad(n){return n<10?"0"+n:""+n;}
-function fmtLeft(ms){var s=Math.max(0,Math.ceil(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60);return (h?h+":"+pad(m):m)+":"+pad(s%60);}
+function fmtLeft(ms){var s=Math.max(0,Math.ceil(ms/1000));return Math.floor(s/60)+":"+pad(s%60);}
 function tick(){
   var tm=document.querySelector("#strip .tm");if(!tm)return;
-  if(S.locked){tm.textContent="RESULTS LOCKED";tm.className="tm done";return;}
-  if(!S.revealAt){tm.textContent="";return;}
-  var d=S.revealAt-nowMs();
-  if(d>0){tm.textContent="WINNER IN "+fmtLeft(d);tm.className="tm"+(d<=60000?" soon":"");}
-  else if(d>-60000){tm.textContent="REVEALING...";tm.className="tm soon";}
-  else{tm.textContent="WINNER IN --:--";tm.className="tm";refreshReveal();}   // nothing happened: ask the Pi for the next one
+  var text="",cls="tm";
+  if(!S.locked&&S.revealAt){
+    var d=S.revealAt-nowMs();
+    if(d>0&&d<=CFG.countdownShowMs){text=fmtLeft(d);if(d<=60000)cls+=" soon";}
+    else if(d<=-60000)refreshReveal();                           // the lock passed without happening: ask the Pi for the next one
+  }
+  tm.textContent=text;tm.className=cls+(text?"":" off");
 }
 function refreshReveal(){
   if(TEST||Date.now()-lastRefresh<30000)return;lastRefresh=Date.now();
